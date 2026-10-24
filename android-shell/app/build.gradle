@@ -21,13 +21,16 @@ android {
         minSdk 26
         targetSdk 34
         // versionCode 必须严格递增，否则 Android 拒绝覆盖安装（表现为「应用未安装」）。
+        // 约定：versionCode 与 versionName 的小版本号保持一致，避免两者各说各话
+        // （历史遗留：1.0.12 曾配 versionCode 11，已在本版对齐）。
         // 1.0.7：回复条配色逐项自定义；1.0.8：浮窗自检与失败留痕。
         // 1.0.9：修 TransactionTooLargeException（头像经 Intent 撑爆 Binder 上限）。
         // 1.0.10：浮窗改圆角矩形；浮窗左上角显示「待发 N」角标。
         // 1.0.11：截屏与主动查岗（含查岗浮层回复框）；通知栏「直接回复」。
         // 1.0.12：截屏可选收件人；位置感知；睡眠（Health Connect）。
-        versionCode 11
-        versionName "1.0.12"
+        // 1.0.13：versionCode 与 versionName 对齐；启用本仓库自管的签名密钥。
+        versionCode 13
+        versionName "1.0.13"
         buildConfigField "String", "SITE_URL", "\"${siteUrl}\""
     }
 

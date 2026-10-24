@@ -28,3 +28,14 @@ tools/weixin-local-assistant/config.txt
 *.ts.net.crt
 *.ts.net.key
 /public/models/world-builder/
+
+# Android 签名密钥与材料：绝不能进仓库
+# 丢了这把钥匙，已安装的 APK 就无法覆盖升级，用户只能卸载重装（会丢 WebView 内的本地数据）。
+*.jks
+*.keystore
+*.base64.txt
+*.cer
+signing/
+android-shell/keystore.properties
+android-shell/local.properties
+android-shell/.gradle/

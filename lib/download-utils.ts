@@ -13,6 +13,14 @@ type FloatShellBridge = {
     launchExternalApp?: (packageName: string, dataUrl: string) => boolean;
     /** 直链交给系统下载管理器（真后台）；返回是否成功入队 */
     downloadUrl?: (url: string, fileName: string) => boolean;
+    /** 分块导出：开始会话，返回 token（空串 = 失败） */
+    beginFileChunked?: (fileName: string) => string;
+    /** 分块导出：追加一块 base64 */
+    appendFileChunk?: (token: string, base64: string) => boolean;
+    /** 分块导出：收尾并让文件在「下载」目录可见 */
+    finishFileChunked?: (token: string) => boolean;
+    /** 分块导出：中止并删除半成品 */
+    abortFileChunked?: (token: string) => boolean;
 };
 
 function readFloatShellBridge(): FloatShellBridge | null {
@@ -63,6 +71,80 @@ export function isIOSBrowser(): boolean {
     return /iPad|iPhone|iPod/i.test(ua) || (platform === "MacIntel" && navigator.maxTouchPoints > 1);
 }
 
+/**
+ * 分块导出时每次读取的字节数。
+ *
+ * 为什么是 256KB：base64 后膨胀到约 341KB，离 Android Binder 事务上限（约 1MB）
+ * 还有三倍余量。调大到 512KB 时 base64 已 683KB，加上字符串与 JNI 开销就贴近
+ * 上限了；调小则往返次数变多、导出变慢。256KB 是这两者之间的稳妥值。
+ */
+const CHUNK_BYTES = 256 * 1024;
+
+/** Blob 的一个分片 → 纯 base64（去 data URL 前缀），供分块桥使用。 */
+function chunkToBase64(blob: Blob): Promise<string> {
+    return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => {
+            const result = String(reader.result || "");
+            const comma = result.indexOf(",");
+            resolve(comma >= 0 ? result.slice(comma + 1) : result);
+        };
+        reader.onerror = () => reject(reader.error ?? new Error("读取分片内容失败"));
+        reader.readAsDataURL(blob);
+    });
+}
+
+/**
+ * 用分块桥把大文件写进壳的「下载」目录。
+ *
+ * 这是导出备份的主路径。原先的做法是把整个 zip 转成一个 base64 字符串塞给
+ * saveBase64File——Android 的 Binder 事务上限约 1MB，备份稍大就抛
+ * TransactionTooLargeException，而原生侧 runCatching 把它吞成 false，
+ * 网页只能看到「失败」，实际表现是「点了导出没反应」。
+ *
+ * 这里逐块传输：任意时刻跨桥的数据都在 CHUNK_BYTES 量级，与文件总大小无关。
+ * 失败一定会 abort，避免在「下载」目录留下半成品。
+ *
+ * @returns true = 已完整写入；false = 壳不支持分块桥或中途失败（调用方走兜底）
+ */
+async function saveViaChunkedBridge(blob: Blob, filename: string): Promise<boolean> {
+    const shell = readFloatShellBridge();
+    if (!shell?.beginFileChunked || !shell.appendFileChunk
+        || !shell.finishFileChunked || !shell.abortFileChunked) {
+        return false;
+    }
+
+    let token = "";
+    try {
+        token = shell.beginFileChunked(filename);
+        if (!token) return false;
+
+        for (let offset = 0; offset < blob.size; offset += CHUNK_BYTES) {
+            const slice = blob.slice(offset, Math.min(offset + CHUNK_BYTES, blob.size));
+            const base64 = await chunkToBase64(slice);
+            if (!shell.appendFileChunk(token, base64)) {
+                shell.abortFileChunked(token);
+                return false;
+            }
+        }
+
+        if (!shell.finishFileChunked(token)) {
+            shell.abortFileChunked(token);
+            return false;
+        }
+        return true;
+    } catch {
+        if (token) {
+            try {
+                shell.abortFileChunked(token);
+            } catch {
+                // 中止本身失败也没有更好的补救手段，交给调用方兜底
+            }
+        }
+        return false;
+    }
+}
+
 export async function downloadFile(blob: Blob, filename: string, options: DownloadFileOptions = {}): Promise<void> {
     const url = URL.createObjectURL(blob);
     const anchorDownload = () => {
@@ -103,17 +185,34 @@ export async function downloadFile(blob: Blob, filename: string, options: Downlo
     }
 
     // 壳环境：blob: + a[download] 在 WebView 里不会落盘（DownloadManager 取不到内存地址），
-    // 必须把内容 base64 交给壳从 MediaStore 写进公共「下载」目录。落盘失败再退回浏览器做法。
+    // 必须交给壳写进公共「下载」目录。
+    //
+    // 顺序有讲究：**优先分块**，整包直传只留给小文件。
+    // 分块路径与文件大小无关地安全；整包路径超过约 750KB（base64 后越过 Binder
+    // 的 1MB 上限）就会抛 TransactionTooLargeException 被静默吞成 false，
+    // 表现是「点了导出没反应」。1MB 以下仍走整包，少几次往返。
     const shell = readFloatShellBridge();
-    if (shell?.saveBase64File) {
-        try {
-            const base64 = await blobToBase64(blob);
-            if (shell.saveBase64File(filename, base64)) {
+    if (shell) {
+        const useChunked = typeof shell.beginFileChunked === "function";
+        if (useChunked && blob.size > CHUNK_BYTES) {
+            if (await saveViaChunkedBridge(blob, filename)) {
                 setTimeout(() => URL.revokeObjectURL(url), 1000);
                 return;
             }
-        } catch {
-            // 交给下面的浏览器兜底路径
+        } else if (shell.saveBase64File) {
+            try {
+                const base64 = await blobToBase64(blob);
+                if (shell.saveBase64File(filename, base64)) {
+                    setTimeout(() => URL.revokeObjectURL(url), 1000);
+                    return;
+                }
+            } catch {
+                // 落到分块路径，再不行才交给浏览器兜底
+                if (useChunked && await saveViaChunkedBridge(blob, filename)) {
+                    setTimeout(() => URL.revokeObjectURL(url), 1000);
+                    return;
+                }
+            }
         }
     }
 

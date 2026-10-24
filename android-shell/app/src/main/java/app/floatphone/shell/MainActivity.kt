@@ -55,7 +55,14 @@ class MainActivity : AppCompatActivity() {
 
     companion object {
         val SITE_URL: String = BuildConfig.SITE_URL
-        const val VERSION = "1.0.10"
+        /**
+         * 壳版本号。**必须与 app/build.gradle 的 versionName 同步递增**。
+         *
+         * 这个常量会被拼进 WebView 的 UA（`FloatShell/<VERSION>`），网页据此判断
+         * 壳能力、决定哪些原生功能可用。它和 versionName 一旦分叉，就会出现
+         * 「安装的是 1.0.13，网页却以为在 1.0.10 上」这种最难查的错位。
+         */
+        const val VERSION = "1.0.13"
         /** 来电接听等场景的站内深链（必须以 SITE_URL 开头，否则忽略） */
         const val EXTRA_OPEN_URL = "open_url"
         /** 外部 App（如桌宠）唤起本壳用的自定义 scheme：floatshell://open?url=<站内地址> */
@@ -71,6 +78,31 @@ class MainActivity : AppCompatActivity() {
     private lateinit var rootContainer: FrameLayout
     private lateinit var webView: WebView
     private var filePathCallback: ValueCallback<Array<Uri>>? = null
+
+    /**
+     * 分块导出会话表：token → 正在写入的输出流。
+     *
+     * 为什么需要这个：Android 的 Binder 事务上限约 1MB，整个备份一次性跨桥
+     * （saveBase64File 那种做法）在文件稍大时必炸 TransactionTooLargeException，
+     * 且异常会被 runCatching 吞成 false，网页侧只看到「导出失败/没反应」。
+     * 改成 begin → append×N → finish 之后，每次只过一小块，内存与事务都恒定。
+     *
+     * 用 ConcurrentHashMap 而非普通 map：JavascriptInterface 的调用发生在
+     * WebView 的 JavaBridge 线程，可能与生命周期回调并发。
+     */
+    private val chunkedExports = java.util.concurrent.ConcurrentHashMap<String, ChunkedExport>()
+
+    /**
+     * 一次分块导出的会话状态。
+     *
+     * Q+ 走 MediaStore 时持有 uri（收尾要把它从 IS_PENDING 置 0 才可见），
+     * 老系统直接写文件，url 为 null。output 由 session 自身作锁，
+     * 保证 append 与 finish/abort 不交叉写。
+     */
+    private class ChunkedExport(val fileName: String) {
+        var output: java.io.OutputStream? = null
+        var uri: Uri? = null
+    }
 
     /** 系统状态栏实际高度（CSS px，即物理像素 / density），实时更新。 */
     @Volatile
@@ -544,6 +576,18 @@ class MainActivity : AppCompatActivity() {
     override fun onDestroy() {
         if (ShellBus.webView === webView) ShellBus.webView = null
         CookieManager.getInstance().flush()
+        // 未收尾的分块导出必须在这里关掉并删除半成品。页面被销毁时 JS 已经
+        // 没机会补 abort 调用，留着会泄漏文件句柄，还在「下载」目录留下
+        // 一个 IS_PENDING 永不复位的幽灵条目。
+        runCatching {
+            synchronized(chunkedExports) {
+                chunkedExports.keys.toList().forEach { token ->
+                    val session = chunkedExports.remove(token) ?: return@forEach
+                    runCatching { session.output?.close() }
+                    session.uri?.let { uri -> runCatching { contentResolver.delete(uri, null, null) } }
+                }
+            }
+        }
         webView.destroy()
         super.onDestroy()
     }
@@ -1209,6 +1253,11 @@ class MainActivity : AppCompatActivity() {
          * Android 10+ 走 MediaStore 不需要任何权限；8/9 需要 WRITE_EXTERNAL_STORAGE
          * （Manifest 里已用 maxSdkVersion=28 限定）。
          * 返回是否写入成功；文件名里的非法字符会被替换，避免路径穿越。
+         *
+         * ⚠️ 大文件不要用这个方法。整个文件一次性跨 Binder 传递，超过约 1MB
+         * （Binder 事务上限）必然抛 TransactionTooLargeException，而 runCatching
+         * 会把它吞成 false，调用方只能看到「失败」看不出原因。备份动辄几十 MB，
+         * 请改用下面的 [saveFileChunk] 分块写入。
          */
         @JavascriptInterface
         fun saveBase64File(fileName: String, base64: String): Boolean = runCatching {
@@ -1237,6 +1286,119 @@ class MainActivity : AppCompatActivity() {
                 if (!dir.exists()) dir.mkdirs()
                 FileOutputStream(File(dir, safeName)).use { it.write(bytes) }
             }
+            true
+        }.getOrDefault(false)
+
+        /**
+         * 分块流式写入：开始一次大规模导出。
+         *
+         * 解决的是 [saveBase64File] 的 Binder 上限问题：整个备份几百 MB 时，
+         * 一次性塞进一个 String 参数会直接抛 TransactionTooLargeException，
+         * 而且异常被 runCatching 吞掉，网页侧只能看到 false —— 表现就是
+         * 「点了导出没反应」。
+         *
+         * 用法：beginFileChunked → appendFileChunk × N → finishFileChunked。
+         * 任一步返回 false 都应当 abortFileChunked，不要留下半个文件。
+         * 返回本次导出会话的 token（空串表示失败），后续 chunk 都带这个 token。
+         */
+        @JavascriptInterface
+        fun beginFileChunked(fileName: String): String = runCatching {
+            val safeName = fileName
+                .replace(Regex("[\\\\/:*?\"<>|]"), "_")
+                .trim()
+                .ifBlank { "download" }
+                .take(120)
+
+            // 先把输出流准备出来，成功之后才登记进 map。
+            // 注意不要在 synchronized 块里写非局部 return：synchronized 是内联函数，
+            // 里层 lambda 的 return@runCatching 会跨过它返回，语义容易出错；
+            // 这里改成「先算结果，再加锁登记」，路径唯一且好读。
+            val session = ChunkedExport(safeName)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                val values = ContentValues().apply {
+                    put(MediaStore.Downloads.DISPLAY_NAME, safeName)
+                    put(MediaStore.Downloads.MIME_TYPE, guessMimeType(safeName))
+                    put(MediaStore.Downloads.IS_PENDING, 1)
+                }
+                val uri = contentResolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
+                if (uri == null) return@runCatching ""
+                val stream = contentResolver.openOutputStream(uri)
+                if (stream == null) {
+                    contentResolver.delete(uri, null, null)
+                    return@runCatching ""
+                }
+                session.uri = uri
+                session.output = stream
+            } else {
+                @Suppress("DEPRECATION")
+                val dir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
+                if (!dir.exists()) dir.mkdirs()
+                session.output = FileOutputStream(File(dir, safeName))
+            }
+
+            val token = "exp_" + System.currentTimeMillis().toString(36) +
+                "_" + Integer.toHexString(hashCode())
+            synchronized(chunkedExports) { chunkedExports[token] = session }
+            token
+        }.getOrDefault("")
+
+        /**
+         * 追加一块数据（base64）。分块由网页决定，建议 256KB 一块——
+         * base64 后约 341KB，离 Binder 的 1MB 还有充足余量。
+         * 返回是否写入成功。
+         */
+        @JavascriptInterface
+        fun appendFileChunk(token: String, base64: String): Boolean = runCatching {
+            val session = synchronized(chunkedExports) { chunkedExports[token] }
+                ?: return@runCatching false
+            val bytes = Base64.decode(base64, Base64.DEFAULT)
+            // 写成功与否先落到局部变量，再返回——避免在 synchronized 的 lambda
+            // 里做非局部 return。
+            val written = synchronized(session) {
+                val out = session.output
+                if (out == null) {
+                    false
+                } else {
+                    out.write(bytes)
+                    true
+                }
+            }
+            written
+        }.getOrDefault(false)
+
+        /**
+         * 收尾：关闭流并（Android Q+）把 IS_PENDING 置 0，让文件在「下载」目录可见。
+         * 返回是否成功。
+         */
+        @JavascriptInterface
+        fun finishFileChunked(token: String): Boolean = runCatching {
+            val session = synchronized(chunkedExports) { chunkedExports.remove(token) }
+                ?: return@runCatching false
+            synchronized(session) {
+                session.output?.flush()
+                session.output?.close()
+            }
+            session.uri?.let { uri ->
+                val values = ContentValues().apply { put(MediaStore.Downloads.IS_PENDING, 0) }
+                contentResolver.update(uri, values, null, null)
+            }
+            true
+        }.getOrDefault(false)
+
+        /**
+         * 中止导出：关闭并删除半成品，避免「下载」目录里留下一个打不开的残包。
+         *
+         * 这一步不能省。用户取消、OOM、切后台被冻结，都可能让流程停在中间——
+         * 留下 IS_PENDING=1 的条目或半截文件，用户看到的是一个坏文件却又删不干净。
+         */
+        @JavascriptInterface
+        fun abortFileChunked(token: String): Boolean = runCatching {
+            val session = synchronized(chunkedExports) { chunkedExports.remove(token) }
+                ?: return@runCatching false
+            synchronized(session) {
+                runCatching { session.output?.close() }
+            }
+            session.uri?.let { uri -> runCatching { contentResolver.delete(uri, null, null) } }
             true
         }.getOrDefault(false)
 
