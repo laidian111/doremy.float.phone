@@ -4,7 +4,7 @@ import { useState, useEffect, useCallback, useRef, useMemo, memo } from "react";
 import { findCustomStickerByName, resolveCustomStickerUrl } from "@/lib/custom-sticker-storage";
 import { isMediaStoreRef, loadMediaObjectUrl } from "@/lib/media-cache-storage";
 import { formatFileSize } from "@/lib/chat-attachment";
-import { guessSiteName } from "@/lib/chat-share";
+import { guessSiteName, parseBareLinkMessage } from "@/lib/chat-share";
 import { getChatImageFromIndexedDB } from "@/lib/chat-asset-storage";
 import { ChatMessage, createOrGetSession, loadChatAppSettings, resolveMeetingInviteCardConfig, updateMessageMediaStatus, updateMessageMediaData } from "@/lib/chat-storage";
 import { resolveContactCard } from "@/lib/contact-card";
@@ -134,6 +134,28 @@ export const MessageBubble = memo(function MessageBubble({ msg, onUpdate, charNa
             // 聊天插件自定义消息类型：mediaType = "plugin:<kind>"，由注册插件渲染
             if (msg.mediaType?.startsWith("plugin:")) {
                 return <PluginKindBubble msg={msg} kind={msg.mediaType.slice("plugin:".length)} />;
+            }
+            // 兜底：角色把链接当普通文字发了（没调用分享工具）。
+            // 整条消息就是一个链接时按卡片渲染——用户要的是卡片，不是
+            // 一行裸链接。跟用户侧「粘贴纯链接自动变卡片」同一逻辑。
+            // 只对 assistant 生效：用户主动发什么就该是什么。
+            if (msg.role === "assistant") {
+                const bare = parseBareLinkMessage(displayContent ?? msg.content);
+                if (bare) {
+                    return (
+                        <WebLinkShareBubble
+                            msg={{
+                                ...msg,
+                                mediaData: {
+                                    ...msg.mediaData,
+                                    webLinkUrl: bare.url,
+                                    webLinkTitle: guessSiteName(bare.url),
+                                    webLinkSiteName: guessSiteName(bare.url),
+                                },
+                            }}
+                        />
+                    );
+                }
             }
             const textBubble = <TextBubble content={displayContent ?? msg.content} onActionSelect={onActionSelect} defaultTranslationExpanded={defaultTranslationExpanded} />;
             return (

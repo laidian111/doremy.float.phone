@@ -6424,7 +6424,9 @@ export function ChatRoom({ session, onBack, onDeleted }: ChatRoomProps) {
                     const cardStateValues = msg.freshStateValues ?? msg.stateValues;
                     const isSilentThought = !visibleContent && !renderMsg.mediaType && hasFoldedPanel && msg.role !== "user";
                     const isStandaloneHtmlPreview = !renderMsg.mediaType && isStandaloneHtmlPreviewContent(bubbleDisplayContent);
-                    const isMediaBubble = (renderMsg.mediaType && CHAT_MEDIA_BUBBLE_TYPES.has(renderMsg.mediaType)) || isStandaloneHtmlPreview;
+                    const isMediaBubble = (renderMsg.mediaType && CHAT_MEDIA_BUBBLE_TYPES.has(renderMsg.mediaType)) || isStandaloneHtmlPreview
+        // 兜底：角色把纯链接当文字发时渲染成卡片，同样不该套文字气泡壳
+        || (!renderMsg.mediaType && renderMsg.role === "assistant" && !!parseBareLinkMessage(bubbleDisplayContent || renderMsg.content));
                     // Empty bubble: no visible content AND no visual media AND no folded panel.
                     const isEmptyBubble = !isVisualMedia && !visibleContent && uiRole(msg) !== "system" && !hasFoldedPanel;
                     const selectableStoredId = getSelectableStoredMessageId(msg);
