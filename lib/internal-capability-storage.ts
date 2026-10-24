@@ -11,6 +11,7 @@ export const NOTE_WALL_CAPABILITY_ID = "note_wall_service";
 export const MUSIC_CONTROL_CAPABILITY_ID = "music_control";
 export const CALENDAR_MANAGEMENT_CAPABILITY_ID = "calendar_management";
 export const SEND_FILE_CAPABILITY_ID = "send_file";
+export const GENERATE_FILE_CAPABILITY_ID = "generate_file";
 export const AGENT_COMPUTER_CAPABILITY_ID = "agent_computer";
 export const LOCAL_DATA_LIBRARY_CAPABILITY_ID = "local_data_library";
 export const TOOLBOX_MANAGEMENT_CAPABILITY_ID = "toolbox_management";
@@ -40,6 +41,7 @@ export const RESERVED_INTERNAL_TOOL_NAMES: string[] = [
     "写入系统日历",
     "写入记忆",
     "发送文件",
+    "生成文件",
     "角色电脑",
     "稍后主动联系",
     "设置定时醒来",
@@ -701,6 +703,54 @@ const SEND_FILE_PARAMETER_SCHEMA = JSON.stringify({
     required: ["url", "type"],
 });
 
+const GENERATE_FILE_PARAMETER_SCHEMA = JSON.stringify({
+    type: "object",
+    properties: {
+        content: {
+            type: "string",
+            description: "文件的完整文字内容。支持换行符 \\n 分段，每段会成为文件里的一个段落。",
+        },
+        format: {
+            type: "string",
+            enum: ["docx", "txt", "md"],
+            description: "文件格式。要给用户看/打印的文档用 docx；纯文本用 txt；带 Markdown 标记的用 md。",
+        },
+        title: {
+            type: "string",
+            description: "文件名（不含扩展名会自动补）。例如「作业批改意见」。",
+        },
+    },
+    required: ["content", "format"],
+});
+
+const GENERATE_FILE_USAGE_GUIDE = [
+    "以下是你获取指令的返回结果：",
+    "服务：生成文件",
+    "用途：把你写的文字直接打包成文件发给{{user}}，{{user}}可以下载、打开、打印。",
+    "",
+    "与「发送文件」的区别（很重要，别用错）：",
+    "  - 发送文件：你手上已经有一个现成的 URL（比如音乐/图片生成 API 返回的链接），用它交付。",
+    "  - 生成文件：你只有**文字内容**，想让{{user}}拿到一个真正的文档。内容由你自己写。",
+    "  - 如果你要交付的是一段你写的文字（批改意见、总结、报告、清单、信件），用「生成文件」。",
+    "",
+    "使用场景：",
+    "  - {{user}}发来作业/文稿让你批改，批改完把意见整理成文档发回去。",
+    "  - {{user}}要一份可以保存、打印的东西（总结、计划、清单、信件）。",
+    "  - 你写的内容比较长，聊天里发一长串不方便阅读。",
+    "",
+    "动作：生成文件",
+    "参数：",
+    "  - content (string, 必填): 文件的完整文字内容，用 \\n 分段",
+    '  - format (string, 必填): "docx"（Word 文档，最常用）、"txt"（纯文本）、"md"（Markdown）',
+    "  - title (string, 可选): 文件名，例如「作业批改意见」",
+    "示例：",
+    '[执行动作:生成文件({"content":"批改意见\\n\\n第一题：正确，+10分\\n第二题：步骤有误\\n\\n总分：85","format":"docx","title":"作业批改意见"})]',
+    "",
+    "注意：",
+    "  - content 里放的是**最终要交给用户的完整内容**，不是草稿摘要。",
+    '  - 不要说「文件已生成，请查收」然后不调用工具——必须真的调用，文件才会出现。',
+].join("\n");
+
 const SEND_FILE_USAGE_GUIDE = [
     "以下是你获取指令的返回结果：",
     "服务：发送文件",
@@ -1359,6 +1409,15 @@ const BUILTIN_INTERNAL_CAPABILITIES: InternalCapabilityConfig[] = [
         updatedAt: 0,
     },
     {
+        id: GENERATE_FILE_CAPABILITY_ID,
+        name: "生成文件",
+        description: "把 AI 自己写的文字内容打包成 docx/txt/md 文件发给{{user}}，{{user}}可以下载、打开、打印。适合批改意见、总结、报告这类需要交付成文档的内容。",
+        enabled: false,
+        mode: "auto",
+        createdAt: 0,
+        updatedAt: 0,
+    },
+    {
         id: LOCAL_DATA_LIBRARY_CAPABILITY_ID,
         name: "本地资料库",
         description: "浏览、读取和搜索{{user}}小手机里的本地数据，包括角色卡、聊天、朋友圈、记忆、工具箱、设置和应用数据。",
@@ -1482,6 +1541,14 @@ export function getInternalCapabilityToolDefinition(capability: InternalCapabili
             description: capability.description,
             parameterSchema: SEND_FILE_PARAMETER_SCHEMA,
             usageGuide: SEND_FILE_USAGE_GUIDE,
+        };
+    }
+    if (capability.id === GENERATE_FILE_CAPABILITY_ID) {
+        return {
+            name: capability.name,
+            description: capability.description,
+            parameterSchema: GENERATE_FILE_PARAMETER_SCHEMA,
+            usageGuide: GENERATE_FILE_USAGE_GUIDE,
         };
     }
     if (capability.id === LOCAL_DATA_LIBRARY_CAPABILITY_ID) {

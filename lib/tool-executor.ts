@@ -23,7 +23,7 @@ import {
 } from "./tool-storage";
 import { executeCustomAppToolCall } from "./custom-app-tool-runtime";
 import { characterWorkspace, agentComputerRequest, isAgentComputerConfigured } from "./agent-computer";
-import { AGENT_COMPUTER_CAPABILITY_ID, CHECK_IN_REQUEST_CAPABILITY_ID, CALENDAR_MANAGEMENT_CAPABILITY_ID, DEVICE_ACTION_CAPABILITY_ID, LOCAL_DATA_LIBRARY_CAPABILITY_ID, MEMORY_WRITE_CAPABILITY_ID, MUSIC_CONTROL_CAPABILITY_ID, NOTE_WALL_CAPABILITY_ID, PERCEPTION_READ_CAPABILITY_ID, PHONE_WIDGET_CAPABILITY_ID, REALITY_BRIDGE_CAPABILITY_ID, SEND_FILE_CAPABILITY_ID, SYSTEM_CALENDAR_CAPABILITY_ID, TIMED_WAKE_CAPABILITY_ID, TOOLBOX_MANAGEMENT_CAPABILITY_ID, getInternalCapability } from "./internal-capability-storage";
+import { AGENT_COMPUTER_CAPABILITY_ID, CHECK_IN_REQUEST_CAPABILITY_ID, CALENDAR_MANAGEMENT_CAPABILITY_ID, DEVICE_ACTION_CAPABILITY_ID, GENERATE_FILE_CAPABILITY_ID, LOCAL_DATA_LIBRARY_CAPABILITY_ID, MEMORY_WRITE_CAPABILITY_ID, MUSIC_CONTROL_CAPABILITY_ID, NOTE_WALL_CAPABILITY_ID, PERCEPTION_READ_CAPABILITY_ID, PHONE_WIDGET_CAPABILITY_ID, REALITY_BRIDGE_CAPABILITY_ID, SEND_FILE_CAPABILITY_ID, SYSTEM_CALENDAR_CAPABILITY_ID, TIMED_WAKE_CAPABILITY_ID, TOOLBOX_MANAGEMENT_CAPABILITY_ID, getInternalCapability } from "./internal-capability-storage";
 import {
     checkQueryCooldown,
     describeStatusByFocus,
@@ -161,6 +161,7 @@ export type ToolResult = {
 };
 
 import { extractBase64Blocks, storeMediaBase64, storeMediaBlob, detectMediaType, MEDIA_STORE_PROTOCOL } from "./media-cache-storage";
+import { buildGeneratedFile, ensureFileExtension, type GeneratedFileFormat } from "./chat-file-generator";
 
 const MAX_RESULT_LENGTH = 2000;
 const PROXY_URL = "/api/tool-proxy";
@@ -812,6 +813,7 @@ async function executeInternalTool(call: ToolCall, context?: ToolExecutionContex
     if (isLocalDataToolName(call.name)) return executeLocalDataTool(call);
     if (isToolboxManagementToolName(call.name)) return executeToolboxManagementTool(call);
     if (call.name === "发送文件") return executeSendFileTool(call);
+    if (call.name === "生成文件") return executeGenerateFileTool(call);
     if (call.name === "角色电脑") return executeAgentComputerTool(call, context);
     // 内置工具必须排在用户自定义的现实桥动作**之前**：
     // 用户完全可能把快捷动作也命名成「查看手机状态」，若让现实桥先匹配，
@@ -2751,6 +2753,82 @@ async function executeSendFileTool(call: ToolCall): Promise<ToolResult> {
         persistToHistory: false,
         mediaAttachments: [{ type: resolvedType, url: finalUrl, title: title || undefined }],
     };
+}
+
+/**
+ * 把 AI 写的文字打包成文件发给用户。
+ *
+ * 与 executeSendFileTool 的分工：
+ *   - 发送文件：AI 手上已有现成 URL（音乐/图片生成 API 返回的链接），直接交付。
+ *   - 生成文件：AI 只有**文字**，要变成一个真正的文档交给用户。
+ *
+ * 为什么需要它：模型不会产出文件，只会产出文字。用户发了作业要批改，
+ * 批改结果是文字，但「发回给用户」这个动作需要一个文件对象。
+ * 这里补的就是「文字 → 文件」这一步。
+ *
+ * 走的是和「发送文件」完全相同的出口（mediaAttachments），所以渲染、
+ * 下载、存储都不需要改——消息层拿到的是一个 media-store:// 引用。
+ */
+async function executeGenerateFileTool(call: ToolCall): Promise<ToolResult> {
+    const capability = getInternalCapability(GENERATE_FILE_CAPABILITY_ID);
+    if (!capability || !capability.enabled || capability.mode === "off") {
+        return {
+            name: call.name,
+            success: false,
+            error: "生成文件能力未启用",
+            continueConversation: false,
+            persistToHistory: false,
+            userNotice: "生成文件能力未启用（工具箱 → 内置能力）",
+        };
+    }
+
+    const args = call.args || {};
+    const content = typeof args.content === "string" ? args.content : "";
+    const rawFormat = typeof args.format === "string" ? args.format.trim().toLowerCase() : "";
+    const rawTitle = typeof args.title === "string" ? args.title.trim() : "";
+
+    if (!content.trim()) {
+        return {
+            name: call.name,
+            success: false,
+            // 这句要具体：模型看到「内容为空」会自己重试补上 content；
+            // 只说「参数错误」它会换个姿势继续错。
+            error: "content 为空，没有内容可以生成文件",
+            continueConversation: true,
+            persistToHistory: true,
+        };
+    }
+
+    const format: GeneratedFileFormat = rawFormat === "docx" || rawFormat === "md" ? rawFormat : "txt";
+
+    try {
+        const { blob } = await buildGeneratedFile(content, format);
+        const fileName = ensureFileExtension(rawTitle || "文件", format);
+        const ref = await storeMediaBlob(blob, blob.type, "file");
+
+        return {
+            name: call.name,
+            success: true,
+            data: `文件已生成并发送：${fileName}`,
+            continueConversation: true,
+            // persistToHistory: false —— 与「发送文件」一致。文件本身会作为
+            // 一条 media_file 消息落库，工具调用记录不必再重复一遍。
+            persistToHistory: false,
+            mediaAttachments: [{
+                type: "file",
+                url: ref,
+                title: fileName,
+            }],
+        };
+    } catch (err) {
+        return {
+            name: call.name,
+            success: false,
+            error: `生成文件失败：${err instanceof Error ? err.message : String(err)}`,
+            continueConversation: true,
+            persistToHistory: true,
+        };
+    }
 }
 
 function inferMediaAttachmentType(url: string, title: string): MediaAttachment["type"] {
