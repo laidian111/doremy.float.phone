@@ -160,7 +160,31 @@ export async function simpleLLMCall(
         const bodyTokenEstimate = Math.ceil(bodySize / 3);
         console.log("[simpleLLMCall] Request:", { url: fetchUrl.slice(0, 80), bodySize, bodyTokenEstimate, model: config.defaultModel });
 
-        const res = await fetch(fetchUrl, { method: "POST", headers, body, signal: options?.signal });
+        // 请求方式与聊天主链路保持一致（见 lib/llm-provider-adapter.ts 的注入点）。
+        //
+        // 这里不能直接 import fetchLlmPayload：api-helpers 被 llm-provider-adapter
+        // 反向依赖（它要用 determineBaseUrl / buildRequestHeaders），直接引用会成环。
+        // 所以内联同一套判断，语义必须与那边一致——两处分叉就会出现「拉取模型能通、
+        // 测试连接不通」这种一半好一半坏的状态。
+        const useServerProxy = (config.requestMode || "server") !== "direct";
+        const res = useServerProxy
+            ? await fetch("/api/llm-proxy", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ url: fetchUrl, method: "POST", headers, body }),
+                signal: options?.signal,
+            })
+            : await fetch(fetchUrl, { method: "POST", headers, body, signal: options?.signal });
+
+        // 代理层自己报的错（SSRF 拦截 / 上游不可达）是 JSON 结构，
+        // 直接按上游格式解析会得到「返回数据格式不符合预期」，掩盖真实原因。
+        if (!res.ok && useServerProxy) {
+            const proxyError = await res.clone().json().catch(() => null) as { error?: string } | null;
+            if (proxyError?.error) {
+                console.warn("[simpleLLMCall] proxy error:", proxyError.error);
+                return { content: null, error: proxyError.error };
+            }
+        }
 
         if (!res.ok) {
             const errText = await res.text().catch(() => "");
