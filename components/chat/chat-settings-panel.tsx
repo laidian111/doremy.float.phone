@@ -50,6 +50,7 @@ import { createChatRecordExport, importChatRecordFile } from "@/lib/chat-record-
 import { getSchemes, saveScheme, deleteScheme, type CSSScheme } from "@/lib/css-scheme-storage";
 import { CustomStatusFrame } from "@/components/chat/custom-status-frame";
 import { KeyboardAutoSendDebounceItem } from "@/components/chat/keyboard-auto-send-debounce-item";
+import { RoleCapabilitySettings } from "@/components/chat/role-capability-settings";
 import { SessionChatSoundsSection } from "@/components/chat/session-chat-sounds";
 import { ChevronRight, Image as ImageIcon, Video, Mic, UserMinus, UserPlus, Users, Pin, Ban, MessageSquare, Search, AlertCircle, Code, Laptop, Trash2, Smile, Sparkles, X, Play, Upload, Download, Save, FolderOpen, Camera, RefreshCw, type LucideIcon } from "lucide-react";
 import { BINDING_ACCENTS, CONTENT_APP_ACCENTS } from "@/lib/ui-accent-colors";
@@ -1551,8 +1552,7 @@ export function ChatSettingsPanel({
 
                 {/* Advanced */}
                 <div className="menu-group">
-                    <KeyboardAutoSendDebounceItem sessionId={session.id} />
-                    <button className="menu-item" onClick={() => setEditingCSS(true)}>
+                    <KeyboardAutoSendDebounceItem sessionId={session.id} />                    <button className="menu-item" onClick={() => setEditingCSS(true)}>
                         <ChatInfoIcon icon={Code} color={BINDING_ACCENTS.embedding} />
                         <div className="menu-label-group"><span className="menu-label">自定义 CSS 样式</span><span className="menu-desc">{customCSS ? "本会话覆盖全局" : "跟随全局聊天室 CSS"}</span></div>
                         <div className="menu-right">
@@ -1561,6 +1561,9 @@ export function ChatSettingsPanel({
                         </div>
                     </button>
                 </div>
+
+                {/* 角色级能力开关：工具箱里的全局设置是这里的默认值 */}
+                <RoleCapabilitySettings session={session} />
 
                 {/* Destructive Actions */}
                 <div className="menu-group">

@@ -360,7 +360,13 @@ export type EnabledTool = {
     mcpTools?: McpDiscoveredTool[];
 };
 
-export function getEnabledTools(appId?: string): EnabledTool[] {
+/**
+ * 收集当前可用的全部工具。
+ *
+ * ownerKey 用于「角色级能力覆盖」：传了就按该角色配置过滤内置能力，
+ * 不传则只用全局开关（与旧行为一致，不影响任何现有调用点）。
+ */
+export function getEnabledTools(appId?: string, ownerKey?: string | null): EnabledTool[] {
     const tools: EnabledTool[] = [];
 
     const restTools = loadRestTools();
@@ -435,7 +441,7 @@ export function getEnabledTools(appId?: string): EnabledTool[] {
         });
     }
 
-    for (const capability of getEnabledInternalCapabilities(appId)) {
+    for (const capability of getEnabledInternalCapabilities(appId, ownerKey)) {
         const tool = getInternalCapabilityToolDefinition(capability);
         if (!tool) continue;
         tools.push({

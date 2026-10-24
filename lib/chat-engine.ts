@@ -66,6 +66,7 @@ import { maybeRunSummarization } from "./memory-summarizer";
 import { prepareShortTermContext } from "./short-term-assembler";
 import { parseActionTags, dispatchActions } from "./action-parser";
 import { findEnabledToolForSchema, getEnabledTools, type EnabledTool } from "./tool-storage";
+import { capabilityOwnerKey } from "./capability-overrides";
 import { formatToolsForPrompt, formatToolSchema } from "./tool-prompt";
 import { parseToolCalls, parseToolFetches, executeToolCalls, formatToolResults } from "./tool-executor";
 import type { ToolCall, ToolResult } from "./tool-executor";
@@ -1868,7 +1869,12 @@ export async function buildChatPromptMessages(
     const isOfflineMode = options?.appTags?.includes("offline") === true;
     const effectiveAppTags = mergeAppTags(options?.appTags, promptProfile?.appTags, resolvedAppId);
     const toolsAllowed = options?.toolsAllowed !== false && !isOfflineMode;
-    const enabledTools = toolsAllowed ? getEnabledTools(resolvedAppId) : [];
+    const enabledTools = toolsAllowed ? getEnabledTools(resolvedAppId, capabilityOwnerKey({
+        isGroup: session.isGroup,
+        sessionId: session.id,
+        contactId: session.contactId,
+        participantIds: session.participantIds,
+    })) : [];
     const toolsEnabled = enabledTools.length > 0
         && (options?.forceEnableTools === true || presetIncludesToolsMacro(preset, resolvedAppId, effectiveAppTags));
     const usesNativeActions = Boolean(toolsEnabled && nativeToolProtocolForConfig(config));
@@ -2210,7 +2216,12 @@ async function generateNativeChatCompletion(
     },
 ): Promise<ChatCompletionResult> {
     const { session, llmMessages, character, config, preset, regexes, userIdentity, options, callbacks, bailoutRef } = params;
-    const enabledTools = getEnabledTools(options?.appId ?? "chat");
+    const enabledTools = getEnabledTools(options?.appId ?? "chat", capabilityOwnerKey({
+        isGroup: session.isGroup,
+        sessionId: session.id,
+        contactId: session.contactId,
+        participantIds: session.participantIds,
+    }));
     const requestAppTags = mergeAppTags(options?.appTags, options?.promptProfile?.appTags, options?.appId ?? "chat");
     const persistedSession = loadChatSessions().find(item => item.id === session.id);
     let expandedSourceIds = normalizeNativeExpandedToolSourceIds(
@@ -3102,7 +3113,12 @@ export async function previewPromptRequestSnapshot(
 
     const { llmMessages, character, config, preset, userIdentity, toolsEnabled } = await buildChatPromptMessages(session, effectiveHistory, options);
     const requestMessages = toLlmRequestMessages(llmMessages);
-    const enabledTools = toolsEnabled ? getEnabledTools(options?.appId ?? "chat") : [];
+    const enabledTools = toolsEnabled ? getEnabledTools(options?.appId ?? "chat", capabilityOwnerKey({
+        isGroup: session.isGroup,
+        sessionId: session.id,
+        contactId: session.contactId,
+        participantIds: session.participantIds,
+    })) : [];
     const meta = { characterName: character.name, userName: userIdentity?.name };
 
     if (nativeToolProtocolForConfig(config) && enabledTools.length > 0) {

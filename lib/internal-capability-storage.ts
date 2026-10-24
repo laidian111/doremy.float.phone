@@ -2,6 +2,7 @@ import type { InternalCapabilityConfig } from "./settings-types";
 import { isAgentComputerConfigured, isContainerComputer } from "./agent-computer";
 import { kvGet, kvSet, registerKvMigration } from "./kv-db";
 import { loadBridgeDataItems, loadBridgeShortcutActions, parseBridgeActionParameterSchema } from "./reality-bridge/storage";
+import { resolveCapabilityEnabled } from "./capability-overrides";
 
 const INTERNAL_CAPABILITIES_KEY = "ai_phone_internal_capabilities_v1";
 registerKvMigration(INTERNAL_CAPABILITIES_KEY);
@@ -12,6 +13,7 @@ export const MUSIC_CONTROL_CAPABILITY_ID = "music_control";
 export const CALENDAR_MANAGEMENT_CAPABILITY_ID = "calendar_management";
 export const SEND_FILE_CAPABILITY_ID = "send_file";
 export const GENERATE_FILE_CAPABILITY_ID = "generate_file";
+export const SHARE_CONTENT_CAPABILITY_ID = "share_content";
 export const AGENT_COMPUTER_CAPABILITY_ID = "agent_computer";
 export const LOCAL_DATA_LIBRARY_CAPABILITY_ID = "local_data_library";
 export const TOOLBOX_MANAGEMENT_CAPABILITY_ID = "toolbox_management";
@@ -42,6 +44,7 @@ export const RESERVED_INTERNAL_TOOL_NAMES: string[] = [
     "写入记忆",
     "发送文件",
     "生成文件",
+    "分享内容",
     "角色电脑",
     "稍后主动联系",
     "设置定时醒来",
@@ -751,6 +754,70 @@ const GENERATE_FILE_USAGE_GUIDE = [
     '  - 不要说「文件已生成，请查收」然后不调用工具——必须真的调用，文件才会出现。',
 ].join("\n");
 
+const SHARE_CONTENT_PARAMETER_SCHEMA = JSON.stringify({
+    type: "object",
+    properties: {
+        kind: {
+            type: "string",
+            enum: ["xiaohongshu", "web_link"],
+            description: "分享类型。小红书帖子用 xiaohongshu；其它网站/文章用 web_link。",
+        },
+        url: {
+            type: "string",
+            description: "链接地址。web_link 必填；小红书可选。",
+        },
+        title: {
+            type: "string",
+            description: "标题。必填。",
+        },
+        description: {
+            type: "string",
+            description: "一句话摘要/你的感受。建议填，用户看到卡片时能知道你为什么分享。",
+        },
+        author: {
+            type: "string",
+            description: "小红书作者名（仅 kind=xiaohongshu 时用）。",
+        },
+        body: {
+            type: "string",
+            description: "小红书正文内容（仅 kind=xiaohongshu 时用）。",
+        },
+        siteName: {
+            type: "string",
+            description: "站点名，如「知乎」「B站」。不填会自动从链接推断。",
+        },
+    },
+    required: ["kind", "title"],
+});
+
+const SHARE_CONTENT_USAGE_GUIDE = [
+    "以下是你获取指令的返回结果：",
+    "服务：分享内容",
+    "用途：把一条小红书帖子或网页链接分享给{{user}}，会渲染成卡片显示。",
+    "",
+    "使用场景：",
+    "  - 你「看到」了一篇有意思的东西想给{{user}}看。",
+    "  - {{user}}跟你聊到某个话题，你想说「这让我想起之前看过的一篇」。",
+    "  - 你想推荐音乐/文章/攻略给{{user}}。",
+    "",
+    "动作：分享内容",
+    "参数：",
+    "  - kind (string, 必填): \"xiaohongshu\"（小红书帖子）或 \"web_link\"（其它网页）",
+    "  - title (string, 必填): 标题",
+    "  - url (string): 链接地址，web_link 必填",
+    "  - description (string): 一句话说明你为什么分享这个，强烈建议填",
+    "  - author (string): 小红书作者名",
+    "  - body (string): 小红书正文",
+    "  - siteName (string): 站点名，不填会从链接推断",
+    "示例：",
+    '[执行动作:分享内容({"kind":"web_link","title":"如何做一个不焦虑的人","url":"https://zhuanlan.zhihu.com/p/xxx","description":"看到这篇想到你昨天说的那句话","siteName":"知乎"})]',
+    '[执行动作:分享内容({"kind":"xiaohongshu","title":"秋天的第一杯奶茶","author":"小吃货","body":"这家店真的绝了，推荐！","description":"下次一起去喝"})]',
+    "",
+    "注意：",
+    "  - 分享不是为了凑数。真的觉得有意思、或者和当前话题相关时再分享。",
+    "  - 分享完可以补一句你自己的看法，别只丢一个链接。",
+].join("\n");
+
 const SEND_FILE_USAGE_GUIDE = [
     "以下是你获取指令的返回结果：",
     "服务：发送文件",
@@ -1418,6 +1485,15 @@ const BUILTIN_INTERNAL_CAPABILITIES: InternalCapabilityConfig[] = [
         updatedAt: 0,
     },
     {
+        id: SHARE_CONTENT_CAPABILITY_ID,
+        name: "分享内容",
+        description: "把小红书帖子或网页链接分享给{{user}}，渲染成卡片。适合「看到个好玩的想给你看」这类场景。",
+        enabled: false,
+        mode: "auto",
+        createdAt: 0,
+        updatedAt: 0,
+    },
+    {
         id: LOCAL_DATA_LIBRARY_CAPABILITY_ID,
         name: "本地资料库",
         description: "浏览、读取和搜索{{user}}小手机里的本地数据，包括角色卡、聊天、朋友圈、记忆、工具箱、设置和应用数据。",
@@ -1484,10 +1560,22 @@ export function getInternalCapability(id: string): InternalCapabilityConfig | nu
     return loadInternalCapabilities().find(item => item.id === id) || null;
 }
 
-export function getEnabledInternalCapabilities(appId?: string): InternalCapabilityConfig[] {
+/**
+ * 当前可用的内置能力。
+ *
+ * ownerKey 传了就叠加角色级覆盖（工具箱的全局开关是该角色的默认值）。
+ * 不传则只有全局开关——保持旧行为，现有调用点不受影响。
+ */
+export function getEnabledInternalCapabilities(appId?: string, ownerKey?: string | null): InternalCapabilityConfig[] {
     if (appId !== "chat" && appId !== "group_chat") return [];
     return loadInternalCapabilities().filter(item => {
-        if (!item.enabled || item.mode === "off") return false;
+        // 角色覆盖优先于全局开关；mode === "off" 是硬关闭，覆盖也开不了
+        if (!resolveCapabilityEnabled({
+            capabilityId: item.id,
+            globalEnabled: item.enabled,
+            globalMode: item.mode,
+            ownerKey,
+        })) return false;
         // 角色电脑是可插拔模块：没连接就不注入，模型完全看不见
         if (item.id === AGENT_COMPUTER_CAPABILITY_ID && !isAgentComputerConfigured()) return false;
         return true;
@@ -1549,6 +1637,14 @@ export function getInternalCapabilityToolDefinition(capability: InternalCapabili
             description: capability.description,
             parameterSchema: GENERATE_FILE_PARAMETER_SCHEMA,
             usageGuide: GENERATE_FILE_USAGE_GUIDE,
+        };
+    }
+    if (capability.id === SHARE_CONTENT_CAPABILITY_ID) {
+        return {
+            name: capability.name,
+            description: capability.description,
+            parameterSchema: SHARE_CONTENT_PARAMETER_SCHEMA,
+            usageGuide: SHARE_CONTENT_USAGE_GUIDE,
         };
     }
     if (capability.id === LOCAL_DATA_LIBRARY_CAPABILITY_ID) {

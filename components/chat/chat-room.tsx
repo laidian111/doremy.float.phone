@@ -6,6 +6,7 @@ import { cleanStreamText, splitStreamPreviewSegments, stripLiteralTexts, stripXm
 import type { StateValue } from "@/lib/chat-storage";
 import { storeMediaBlob } from "@/lib/media-cache-storage";
 import { detectFileKind, extractAttachmentText, isExtractableKind } from "@/lib/chat-attachment";
+import { formatWebLinkForPrompt, guessSiteName } from "@/lib/chat-share";
 import { parseStateValues, mergeStateValues } from "@/lib/state-value-parser";
 import { parseAIResponse, type ParsedMessagePart } from "@/lib/rich-message-parser";
 import { isKnownStickerLabel } from "@/lib/sticker-data";
@@ -679,6 +680,8 @@ const ChatTextInputBar = memo(forwardRef<ChatTextInputHandle, {
     onOpenCustomPlusAction: (action: RegisteredCustomAppChatPlusAction) => void;
     /** 打开文件选择器（发送任意文件给角色） */
     onPickFile: () => void;
+    /** 打开「分享链接」输入框 */
+    onShareLink: () => void;
     onStartVideoCall: () => void;
     onStartVoiceCall: () => void;
     onSendText: (text: string, options?: { autoReply?: boolean }) => boolean;
@@ -711,6 +714,7 @@ const ChatTextInputBar = memo(forwardRef<ChatTextInputHandle, {
     onOpenRichModal,
     onOpenCustomPlusAction,
     onPickFile,
+    onShareLink,
     onStartVideoCall,
     onStartVoiceCall,
     onSendText,
@@ -778,6 +782,7 @@ const ChatTextInputBar = memo(forwardRef<ChatTextInputHandle, {
     const suggestEnabled = !inputLocked && !panelOpen && !suggestClosed && inputText.trim().length > 0;
     const plusMenuItems = [
         { icon: <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="var(--c-text)" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" /><polyline points="14 2 14 8 20 8" /><line x1="9" y1="15" x2="15" y2="15" /></svg>, label: "文件", onClick: onPickFile },
+        { icon: <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="var(--c-text)" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71" /><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71" /></svg>, label: "分享链接", onClick: onShareLink },
         { icon: <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="var(--c-text)" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2" /><circle cx="8.5" cy="8.5" r="1.5" /><polyline points="21 15 16 10 5 21" /></svg>, label: "照片墙", onClick: () => onOpenRichModal("photo") },
         { icon: <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="var(--c-text)" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2" /><line x1="7" y1="8" x2="17" y2="8" /><line x1="7" y1="12" x2="14" y2="12" /><line x1="7" y1="16" x2="11" y2="16" /></svg>, label: "文字图片", onClick: () => onOpenRichModal("text_photo") },
         { icon: <AlertCircle size={22} strokeWidth={1.5} color="var(--c-text)" />, label: "系统指令", onClick: () => onOpenRichModal("system_instruction") },
@@ -3260,6 +3265,24 @@ export function ChatRoom({ session, onBack, onDeleted }: ChatRoomProps) {
                 });
                 setMessages(prev => [...prev, msg]);
             }
+            // 分享卡片这类富媒体消息：工具直接给出完整的 mediaType + mediaData，
+            // 这里原样落库即可（走 mediaAttachments 的话字段表达不了）
+            if (result.richMessage) {
+                throwIfGenerationStopped(guard);
+                const msg = pushChatMessage({
+                    sessionId: session.id,
+                    role: "assistant",
+                    content: result.richMessage.content || "",
+                    mediaType: result.richMessage.mediaType,
+                    mediaData: result.richMessage.mediaData,
+                    toolExecutionId,
+                    ...(session.isGroup ? {
+                        senderCharacterId: result.actorCharacterId,
+                        senderName: result.actorName,
+                    } : {}),
+                });
+                setMessages(prev => [...prev, msg]);
+            }
         }
     };
 
@@ -4242,6 +4265,52 @@ export function ChatRoom({ session, onBack, onDeleted }: ChatRoomProps) {
             setFileSending(false);
         }
     }, [fileSending, isGenerating, session.id]);
+
+    /** 分享链接弹窗：开着时显示输入框 */
+    const [shareLinkOpen, setShareLinkOpen] = useState(false);
+    const [shareLinkUrl, setShareLinkUrl] = useState("");
+    const [shareLinkTitle, setShareLinkTitle] = useState("");
+
+    /**
+     * 用户分享一个网页链接给角色。
+     *
+     * 只要求填 URL，标题可选——用户从浏览器复制链接过来时通常只有一串 URL，
+     * 强制填标题会让人放弃。没有标题时用域名兜底，卡片仍然可读。
+     */
+    const handleShareLink = useCallback(() => {
+        const rawUrl = shareLinkUrl.trim();
+        if (!rawUrl) {
+            showChatToast("请先粘贴链接");
+            return;
+        }
+        // 补协议：用户经常只粘 example.com/xxx
+        const url = /^https?:\/\//i.test(rawUrl) ? rawUrl : `https://${rawUrl}`;
+        try {
+            new URL(url);
+        } catch {
+            showChatToast("这个链接看起来不对");
+            return;
+        }
+        const siteName = guessSiteName(url);
+        const title = shareLinkTitle.trim() || siteName;
+        const msg = pushChatMessage({
+            sessionId: session.id,
+            role: "user",
+            content: formatWebLinkForPrompt({ url, title, siteName }),
+            mediaType: "web_link_share",
+            mediaData: {
+                webLinkUrl: url,
+                webLinkTitle: title,
+                webLinkSiteName: siteName,
+            },
+        });
+        setMessages(prev => [...prev, msg]);
+        setShareLinkOpen(false);
+        setShareLinkUrl("");
+        setShareLinkTitle("");
+        // 与文字消息一致：只标记待回复，不立刻触发
+        setPendingGenerate(true);
+    }, [shareLinkUrl, shareLinkTitle, session.id]);
 
     const handleMeetingInviteAction = async (invite: ChatMessage, action: "accept" | "decline") => {
         if (invite.mediaData?.meetingInviteStatus && invite.mediaData.meetingInviteStatus !== "pending") return;
@@ -6825,6 +6894,7 @@ export function ChatRoom({ session, onBack, onDeleted }: ChatRoomProps) {
 	                onOpenRichModal={(modal) => { setShowPlusMenu(false); setRichModal(modal); }}
                 onOpenCustomPlusAction={handleOpenCustomPlusAction}
                 onPickFile={() => { setShowPlusMenu(false); fileInputRef.current?.click(); }}
+                onShareLink={() => { setShowPlusMenu(false); setShareLinkOpen(true); }}
                 onStartVideoCall={() => { cancelFollowUp(session.id); setShowPlusMenu(false); startCall({ sessionId: session.id, characterId: session.isGroup ? "" : session.contactId, kind: "video", initiator: "user" }); }}
                 onStartVoiceCall={() => { cancelFollowUp(session.id); setShowPlusMenu(false); startCall({ sessionId: session.id, characterId: session.isGroup ? "" : session.contactId, kind: "voice", initiator: "user" }); }}
                 onSendText={handleSendText}
@@ -6837,6 +6907,31 @@ export function ChatRoom({ session, onBack, onDeleted }: ChatRoomProps) {
                 放在输入栏外面（而不是输入栏组件内部），是因为它需要调用
                 chat-room 的 handlePickFile —— 那个函数要访问 session、
                 setMessages、triggerAIResponse，都属于这一层。 */}
+            {/* 分享链接弹窗：只要 URL 即可，标题可选（从浏览器复制过来时通常只有链接） */}
+            {shareLinkOpen && (
+                <div className="chat-sharelink-mask" onClick={() => setShareLinkOpen(false)}>
+                    <div className="chat-sharelink-card" onClick={(e) => e.stopPropagation()}>
+                        <div className="chat-sharelink-title">分享链接</div>
+                        <input
+                            className="chat-sharelink-input"
+                            placeholder="粘贴链接（必填）"
+                            value={shareLinkUrl}
+                            onChange={(e) => setShareLinkUrl(e.target.value)}
+                            autoFocus
+                        />
+                        <input
+                            className="chat-sharelink-input"
+                            placeholder="标题（可选）"
+                            value={shareLinkTitle}
+                            onChange={(e) => setShareLinkTitle(e.target.value)}
+                        />
+                        <div className="chat-sharelink-actions">
+                            <button onClick={() => setShareLinkOpen(false)} className="chat-sharelink-btn">取消</button>
+                            <button onClick={handleShareLink} className="chat-sharelink-btn chat-sharelink-btn--primary">发送</button>
+                        </div>
+                    </div>
+                </div>
+            )}
             <input
                 ref={fileInputRef}
                 type="file"

@@ -13,7 +13,7 @@ import { notifyMascotPageContext } from "@/lib/mascot-events";
 import { loadCharacters } from "@/lib/character-storage";
 import { SessionCustomCSS } from "@/components/ui/session-custom-css";
 import { kvGet } from "@/lib/kv-db";
-import { formatXiaohongshuShareForPrompt, type ChatSharePayload } from "@/lib/chat-share";
+import { formatXiaohongshuShareForPrompt, formatWebLinkForPrompt, guessSiteName, type ChatSharePayload } from "@/lib/chat-share";
 import { CHAT_OPEN_SESSION_EVENT, CHAT_OPEN_ADD_CONTACT_EVENT } from "@/lib/chat-notification-events";
 import { CHAT_SESSIONS_MERGED_EVENT, type ChatSessionsMergedDetail } from "@/lib/chat-session-merge";
 import { getMascotSettingsSnapshot } from "@/lib/mascot-settings";
@@ -193,6 +193,25 @@ export const PhoneChatApp = memo(function PhoneChatApp({ onClose, initialSession
                         musicTitle: sharePayload.title,
                         musicArtist: sharePayload.artist,
                         label: `${sharePayload.title} - ${sharePayload.artist}`,
+                    },
+                });
+            } else if (sharePayload.type === "web_link") {
+                // 从浏览器/其它 app 分享进来的普通网页链接
+                pushChatMessage({
+                    sessionId: sess.id,
+                    role: "user",
+                    content: formatWebLinkForPrompt({
+                        url: sharePayload.url,
+                        title: sharePayload.title,
+                        description: sharePayload.description,
+                        siteName: sharePayload.siteName,
+                    }),
+                    mediaType: "web_link_share",
+                    mediaData: {
+                        webLinkUrl: sharePayload.url,
+                        webLinkTitle: sharePayload.title,
+                        webLinkDescription: sharePayload.description,
+                        webLinkSiteName: sharePayload.siteName || guessSiteName(sharePayload.url),
                     },
                 });
             } else {

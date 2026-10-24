@@ -127,6 +127,7 @@ export type ChatMessage = {
         | "payment_request" | "accept_payment_request" | "decline_payment_request"
         | "music" | "music_share" | "music_notify" | "music_not_found"
         | "xiaohongshu_note_share"
+        | "web_link_share"
         | "gift"
         | "contact_card"
         | "app_card"
@@ -225,6 +226,15 @@ export type ChatMessage = {
         xiaohongshuImageAssetId?: string;
         xiaohongshuCoverIcon?: string;
         xiaohongshuTone?: string;
+        // ── 网页链接分享（小红书之外的一切站点）──
+        // 单独存一份而不是复用 xiaohongshu* 字段：卡片形态不同
+        // （网页卡片强调站点名和可点击链接，小红书卡片强调封面和标签），
+        // 混用字段会让渲染层要靠猜来区分。
+        webLinkUrl?: string;
+        webLinkTitle?: string;
+        webLinkDescription?: string;
+        webLinkSiteName?: string;
+        webLinkFavicon?: string;
         callDuration?: string;    // 通话时长（如 05:23）
         /** 用户手动标记的「通话开头」(右键菜单)。老通话留痕丢失时用它圈定区间起点。 */
         callStartMarker?: boolean;

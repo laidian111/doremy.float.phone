@@ -23,7 +23,7 @@ import {
 } from "./tool-storage";
 import { executeCustomAppToolCall } from "./custom-app-tool-runtime";
 import { characterWorkspace, agentComputerRequest, isAgentComputerConfigured } from "./agent-computer";
-import { AGENT_COMPUTER_CAPABILITY_ID, CHECK_IN_REQUEST_CAPABILITY_ID, CALENDAR_MANAGEMENT_CAPABILITY_ID, DEVICE_ACTION_CAPABILITY_ID, GENERATE_FILE_CAPABILITY_ID, LOCAL_DATA_LIBRARY_CAPABILITY_ID, MEMORY_WRITE_CAPABILITY_ID, MUSIC_CONTROL_CAPABILITY_ID, NOTE_WALL_CAPABILITY_ID, PERCEPTION_READ_CAPABILITY_ID, PHONE_WIDGET_CAPABILITY_ID, REALITY_BRIDGE_CAPABILITY_ID, SEND_FILE_CAPABILITY_ID, SYSTEM_CALENDAR_CAPABILITY_ID, TIMED_WAKE_CAPABILITY_ID, TOOLBOX_MANAGEMENT_CAPABILITY_ID, getInternalCapability } from "./internal-capability-storage";
+import { AGENT_COMPUTER_CAPABILITY_ID, CHECK_IN_REQUEST_CAPABILITY_ID, CALENDAR_MANAGEMENT_CAPABILITY_ID, DEVICE_ACTION_CAPABILITY_ID, GENERATE_FILE_CAPABILITY_ID, SHARE_CONTENT_CAPABILITY_ID, LOCAL_DATA_LIBRARY_CAPABILITY_ID, MEMORY_WRITE_CAPABILITY_ID, MUSIC_CONTROL_CAPABILITY_ID, NOTE_WALL_CAPABILITY_ID, PERCEPTION_READ_CAPABILITY_ID, PHONE_WIDGET_CAPABILITY_ID, REALITY_BRIDGE_CAPABILITY_ID, SEND_FILE_CAPABILITY_ID, SYSTEM_CALENDAR_CAPABILITY_ID, TIMED_WAKE_CAPABILITY_ID, TOOLBOX_MANAGEMENT_CAPABILITY_ID, getInternalCapability } from "./internal-capability-storage";
 import {
     checkQueryCooldown,
     describeStatusByFocus,
@@ -158,10 +158,24 @@ export type ToolResult = {
     pendingApproval?: boolean;
     pendingRequest?: MemoryWriteRequest;
     mediaAttachments?: MediaAttachment[];
+    /**
+     * 直接投递一条富媒体消息（分享卡片这类）。
+     *
+     * 为什么不复用 mediaAttachments：那个的 type 只有 audio/image/video/file，
+     * 表达不了「小红书卡片」「网页链接卡片」这种带结构化数据的消息。
+     * 硬塞进去要么丢信息，要么让渲染层靠猜。
+     */
+    richMessage?: {
+        mediaType: "xiaohongshu_note_share" | "web_link_share";
+        mediaData: ChatMessage["mediaData"];
+        content?: string;
+    };
 };
 
 import { extractBase64Blocks, storeMediaBase64, storeMediaBlob, detectMediaType, MEDIA_STORE_PROTOCOL } from "./media-cache-storage";
 import { buildGeneratedFile, ensureFileExtension, type GeneratedFileFormat } from "./chat-file-generator";
+import type { ChatMessage } from "./chat-storage";
+import { formatXiaohongshuShareForPrompt, formatWebLinkForPrompt, guessSiteName } from "./chat-share";
 
 const MAX_RESULT_LENGTH = 2000;
 const PROXY_URL = "/api/tool-proxy";
@@ -814,6 +828,7 @@ async function executeInternalTool(call: ToolCall, context?: ToolExecutionContex
     if (isToolboxManagementToolName(call.name)) return executeToolboxManagementTool(call);
     if (call.name === "发送文件") return executeSendFileTool(call);
     if (call.name === "生成文件") return executeGenerateFileTool(call);
+    if (call.name === "分享内容") return executeShareContentTool(call);
     if (call.name === "角色电脑") return executeAgentComputerTool(call, context);
     // 内置工具必须排在用户自定义的现实桥动作**之前**：
     // 用户完全可能把快捷动作也命名成「查看手机状态」，若让现实桥先匹配，
@@ -2829,6 +2844,104 @@ async function executeGenerateFileTool(call: ToolCall): Promise<ToolResult> {
             persistToHistory: true,
         };
     }
+}
+
+/**
+ * 角色主动分享一条小红书帖子或网页链接。
+ *
+ * 为什么单独做而不是复用 xiaohongshu_note_share：
+ * 那个能力只有「用户分享给角色」这一个方向（phone-chat-app 里写死 role: "user"），
+ * 角色没有任何途径主动发起。这里补上反向。
+ *
+ * 返回 richMessage 而不是 mediaAttachments：分享卡片带结构化字段
+ * （站点名、摘要、标签），mediaAttachments 的 type 表达不了。
+ */
+async function executeShareContentTool(call: ToolCall): Promise<ToolResult> {
+    const capability = getInternalCapability(SHARE_CONTENT_CAPABILITY_ID);
+    if (!capability || !capability.enabled || capability.mode === "off") {
+        return {
+            name: call.name,
+            success: false,
+            error: "分享内容能力未启用",
+            continueConversation: false,
+            persistToHistory: false,
+            userNotice: "分享内容能力未启用（工具箱 → 内置能力）",
+        };
+    }
+
+    const args = call.args || {};
+    const kind = typeof args.kind === "string" ? args.kind.trim() : "";
+    const title = typeof args.title === "string" ? args.title.trim() : "";
+    const url = typeof args.url === "string" ? args.url.trim() : "";
+    const description = typeof args.description === "string" ? args.description.trim() : "";
+
+    if (!title) {
+        return {
+            name: call.name,
+            success: false,
+            error: "缺少 title",
+            continueConversation: true,
+            persistToHistory: true,
+        };
+    }
+
+    if (kind === "xiaohongshu") {
+        const author = typeof args.author === "string" ? args.author.trim() : "";
+        const body = typeof args.body === "string" ? args.body.trim() : "";
+        return {
+            name: call.name,
+            success: true,
+            data: `已分享小红书帖子：${title}`,
+            continueConversation: true,
+            persistToHistory: false,
+            richMessage: {
+                mediaType: "xiaohongshu_note_share",
+                content: formatXiaohongshuShareForPrompt({ author, title, body, description }),
+                mediaData: {
+                    xiaohongshuAuthor: author || undefined,
+                    xiaohongshuTitle: title,
+                    xiaohongshuBody: body || undefined,
+                    xiaohongshuDescription: description || undefined,
+                    xiaohongshuNoteType: "post",
+                    // 角色分享的帖子没有真实封面图，给个占位图标——
+                    // 气泡的封面位不能空着，否则卡片会塌成一行字
+                    xiaohongshuCoverIcon: "小",
+                    xiaohongshuTone: "blush",
+                },
+            },
+        };
+    }
+
+    // web_link（也作为 kind 不合法时的兜底：至少别让角色白调用一次）
+    if (!url) {
+        return {
+            name: call.name,
+            success: false,
+            error: "分享网页链接需要提供 url",
+            continueConversation: true,
+            persistToHistory: true,
+        };
+    }
+    const siteName = typeof args.siteName === "string" && args.siteName.trim()
+        ? args.siteName.trim()
+        : guessSiteName(url);
+    return {
+        name: call.name,
+        success: true,
+        data: `已分享链接：${title}`,
+        continueConversation: true,
+        persistToHistory: false,
+        richMessage: {
+            mediaType: "web_link_share",
+            content: formatWebLinkForPrompt({ url, title, description, siteName }),
+            mediaData: {
+                webLinkUrl: url,
+                webLinkTitle: title,
+                webLinkDescription: description || undefined,
+                webLinkSiteName: siteName,
+            },
+        },
+    };
 }
 
 function inferMediaAttachmentType(url: string, title: string): MediaAttachment["type"] {

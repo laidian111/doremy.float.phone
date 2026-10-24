@@ -4,6 +4,7 @@ import { useState, useEffect, useCallback, useRef, useMemo, memo } from "react";
 import { findCustomStickerByName, resolveCustomStickerUrl } from "@/lib/custom-sticker-storage";
 import { isMediaStoreRef, loadMediaObjectUrl } from "@/lib/media-cache-storage";
 import { formatFileSize } from "@/lib/chat-attachment";
+import { guessSiteName } from "@/lib/chat-share";
 import { getChatImageFromIndexedDB } from "@/lib/chat-asset-storage";
 import { ChatMessage, createOrGetSession, loadChatAppSettings, resolveMeetingInviteCardConfig, updateMessageMediaStatus, updateMessageMediaData } from "@/lib/chat-storage";
 import { resolveContactCard } from "@/lib/contact-card";
@@ -123,6 +124,8 @@ export const MessageBubble = memo(function MessageBubble({ msg, onUpdate, charNa
             return <MediaFileBubble msg={msg} onUpdate={onUpdate} characterId={characterId} />;
         case "xiaohongshu_note_share":
             return <XiaohongshuShareBubble msg={msg} />;
+        case "web_link_share":
+            return <WebLinkShareBubble msg={msg} />;
         case "audio":
             return <VoiceMessageBubble msg={msg} characterId={characterId} onUpdate={onUpdate} defaultTranslationExpanded={defaultTranslationExpanded} />;
         case "meeting_invite":
@@ -2336,6 +2339,50 @@ function XiaohongshuShareBubble({ msg }: { msg: ChatMessage }) {
                     {tags.slice(0, 3).map(tag => <span key={tag}>#{tag}</span>)}
                 </div>
             ) : null}
+        </div>
+    );
+}
+
+/**
+ * 网页链接分享卡片。
+ *
+ * 与小红书卡片的区别：那个是「帖子」，有封面和话题标签；这个是「链接」，
+ * 重点是可点开的 URL 和站点来源。所以样式上做成横向的链接卡，
+ * 点击整卡直接跳浏览器——用户分享过来就是想让对方（或自己）点开看。
+ */
+function WebLinkShareBubble({ msg }: { msg: ChatMessage }) {
+    const data = msg.mediaData;
+    const url = data?.webLinkUrl || "";
+    const title = data?.webLinkTitle || url || "网页链接";
+    const description = data?.webLinkDescription || "";
+    const siteName = data?.webLinkSiteName || (url ? guessSiteName(url) : "网页");
+
+    const openLink = () => {
+        if (!url) return;
+        // 与项目里其它外链一致：新窗口打开，不让 SPA 直接跳走
+        window.open(url, "_blank", "noopener,noreferrer");
+    };
+
+    return (
+        <div
+            className="chat-weblink-card"
+            onClick={(e) => { e.stopPropagation(); openLink(); }}
+            role={url ? "link" : undefined}
+            style={url ? { cursor: "pointer" } : undefined}
+        >
+            <div className="chat-weblink-head">
+                <span className="chat-weblink-site">{siteName}</span>
+                {url ? (
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                        <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
+                        <polyline points="15 3 21 3 21 9" />
+                        <line x1="10" y1="14" x2="21" y2="3" />
+                    </svg>
+                ) : null}
+            </div>
+            <div className="chat-weblink-title">{title}</div>
+            {description ? <div className="chat-weblink-desc">{description}</div> : null}
+            {url ? <div className="chat-weblink-url">{url.replace(/^https?:\/\//, "").slice(0, 60)}</div> : null}
         </div>
     );
 }
