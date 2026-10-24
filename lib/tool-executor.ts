@@ -2871,35 +2871,51 @@ async function executeShareContentTool(call: ToolCall): Promise<ToolResult> {
 
     const args = call.args || {};
     const kind = typeof args.kind === "string" ? args.kind.trim() : "";
-    const title = typeof args.title === "string" ? args.title.trim() : "";
-    const url = typeof args.url === "string" ? args.url.trim() : "";
+    const rawTitle = typeof args.title === "string" ? args.title.trim() : "";
+    const rawUrl = typeof args.url === "string" ? args.url.trim() : "";
     const description = typeof args.description === "string" ? args.description.trim() : "";
 
-    if (!title) {
+    // 角色经常把链接塞进 title 或 description（模型分不清字段是常态）。
+    // 从这些字段里捞一个像 URL 的东西出来，比直接报错体验好得多。
+    const pickUrlFromText = (...texts: string[]): string => {
+        for (const t of texts) {
+            const m = t.match(/https?:\/\/[^\s<>"']+/i);
+            if (m) return m[0];
+        }
+        return "";
+    };
+    const url = rawUrl || pickUrlFromText(rawTitle, description);
+    // 链接被捞出来了就把 URL 从标题里剔掉，别让卡片标题显示一串链接
+    const title = rawTitle.replace(/https?:\/\/\S+/gi, "").replace(/^[\s—·\-:：,，]+|[\s—·\-:：,，]+$/g, "").trim()
+        || (url ? "" : "");
+
+    if (!title && !url) {
         return {
             name: call.name,
             success: false,
-            error: "缺少 title",
+            error: "参数不合法：至少需要 title 或 url。正确的调用方式请回看「分享内容」的使用指南。",
             continueConversation: true,
             persistToHistory: true,
+            userNotice: "角色想分享内容，但参数不对，没有发出来",
         };
     }
 
     if (kind === "xiaohongshu") {
         const author = typeof args.author === "string" ? args.author.trim() : "";
         const body = typeof args.body === "string" ? args.body.trim() : "";
+        const xhsTitle = title || "小红书帖子";
         return {
             name: call.name,
             success: true,
-            data: `已分享小红书帖子：${title}`,
+            data: `已分享小红书帖子：${xhsTitle}`,
             continueConversation: true,
             persistToHistory: false,
             richMessage: {
                 mediaType: "xiaohongshu_note_share",
-                content: formatXiaohongshuShareForPrompt({ author, title, body, description }),
+                content: formatXiaohongshuShareForPrompt({ author, title: xhsTitle, body, description }),
                 mediaData: {
                     xiaohongshuAuthor: author || undefined,
-                    xiaohongshuTitle: title,
+                    xiaohongshuTitle: xhsTitle,
                     xiaohongshuBody: body || undefined,
                     xiaohongshuDescription: description || undefined,
                     xiaohongshuNoteType: "post",
@@ -2914,29 +2930,34 @@ async function executeShareContentTool(call: ToolCall): Promise<ToolResult> {
 
     // web_link（也作为 kind 不合法时的兜底：至少别让角色白调用一次）
     if (!url) {
+        // 没有链接但有标题：退化成一条小红书样式卡片也能看，但更合理的是
+        // 提示模型补 url——纯文字分享不该走卡片通道
         return {
             name: call.name,
             success: false,
-            error: "分享网页链接需要提供 url",
+            error: "分享网页需要提供 url（完整的网址）。如果只是想说点什么，直接写在回复里就行，不用调用这个工具。",
             continueConversation: true,
             persistToHistory: true,
+            userNotice: "角色想分享网页但没给出链接",
         };
     }
     const siteName = typeof args.siteName === "string" && args.siteName.trim()
         ? args.siteName.trim()
         : guessSiteName(url);
+    // title 可能在剔除 URL 后变空（角色把链接塞 title 里的情况），用站点名兜底
+    const finalTitle = title || siteName;
     return {
         name: call.name,
         success: true,
-        data: `已分享链接：${title}`,
+        data: `已分享链接：${finalTitle}`,
         continueConversation: true,
         persistToHistory: false,
         richMessage: {
             mediaType: "web_link_share",
-            content: formatWebLinkForPrompt({ url, title, description, siteName }),
+            content: formatWebLinkForPrompt({ url, title: finalTitle, description, siteName }),
             mediaData: {
                 webLinkUrl: url,
-                webLinkTitle: title,
+                webLinkTitle: finalTitle,
                 webLinkDescription: description || undefined,
                 webLinkSiteName: siteName,
             },

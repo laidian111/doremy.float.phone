@@ -194,6 +194,7 @@ const CHAT_VISUAL_MEDIA_TYPES = new Set([
     "location",
     "music_share",
     "xiaohongshu_note_share",
+    "web_link_share",
     "app_card",
     "audio",
     "video",
@@ -242,6 +243,7 @@ const CHAT_MEDIA_BUBBLE_TYPES = new Set([
     "location",
     "music_share",
     "xiaohongshu_note_share",
+    "web_link_share",
     "app_card",
     "media_file",
 ]);
@@ -3248,6 +3250,11 @@ export function ChatRoom({ session, onBack, onDeleted }: ChatRoomProps) {
             });
         }
         for (const result of results) {
+            // 工具失败时给用户一条可见提示。之前 userNotice 只有记忆写入会显示，
+            // 其它工具失败用户只能靠角色「演」——它会说「功能坏了」或者干脆编。
+            if (!result.success && (result.userNotice || result.error)) {
+                appendTransientMessage("system", `⚠ ${result.userNotice || result.error}`, "tool_notice");
+            }
             for (const att of result.mediaAttachments || []) {
                 throwIfGenerationStopped(guard);
                 const msg = pushChatMessage({
@@ -6652,7 +6659,7 @@ export function ChatRoom({ session, onBack, onDeleted }: ChatRoomProps) {
                                                 },
                                                 onContextMenu: (e: React.MouseEvent) => { e.preventDefault(); openMessageContextMenu(msg.id, { x: e.clientX, y: e.clientY }); },
                                             } : {})}
-                                            className={`chat-bubble-role-${msg.role} ${isMediaBubble ? "chat-bubble-media" : ""} ${isStandaloneHtmlPreview ? "chat-bubble-html-preview" : ""} ${renderMsg.mediaType === "music_share" ? "chat-bubble-music-share" : ""} ${renderMsg.mediaType === "gift" || renderMsg.mediaType === "image" || isStandaloneHtmlPreview ? "rounded-none" : "rounded-md"} break-words relative cursor-pointer select-none`}
+                                            className={`chat-bubble-role-${msg.role} ${isMediaBubble ? "chat-bubble-media" : ""} ${isStandaloneHtmlPreview ? "chat-bubble-html-preview" : ""} ${renderMsg.mediaType === "music_share" ? "chat-bubble-music-share" : ""} ${renderMsg.mediaType === "web_link_share" || renderMsg.mediaType === "xiaohongshu_note_share" ? "chat-bubble-standalone-card" : ""} ${renderMsg.mediaType === "gift" || renderMsg.mediaType === "image" || isStandaloneHtmlPreview ? "rounded-none" : "rounded-md"} break-words relative cursor-pointer select-none`}
                                             style={isStandaloneHtmlPreview ? STANDALONE_CARD_BUBBLE_STYLE : undefined}
                                             data-ui={msg.role === "user" ? "bubble-user" : "bubble-bot"}
                                             data-msg-id={msg.id}

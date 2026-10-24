@@ -1429,6 +1429,16 @@
   box-shadow: var(--chat-bubble-shadow, 0 2px 6px rgba(0,0,0,0.02)) !important;
 }
 
+/* ── 独立卡片消息（网页链接/小红书）：气泡本体完全透明，圆角由卡片自己出。
+   不加这个的话外层还包着一层蓝底/白底气泡框，卡片像被套了一层壳——用户实拍。 ── */
+.chat-bubble-media.chat-bubble-standalone-card {
+  border-radius: 0;
+  background: transparent !important;
+  padding: 0 !important;
+  box-shadow: none !important;
+  overflow: visible !important;
+}
+
 /* ── Gift Card ── */
 .chat-gift-card {
   background: #ffffff;
