@@ -17,7 +17,17 @@ android {
     compileSdk 36
 
     defaultConfig {
-        applicationId "app.floatphone.shell"
+        // applicationId 是「这台设备上算不算同一个 App」的唯一标识，与 namespace
+        // （代码命名空间）是两件事。改它就能让新旧两个 App 并存，而不用动
+        // 22 个 Kotlin 文件的 package 声明和目录结构。
+        //
+        // 为什么必须是 app.floatphone.shell.pro 而不是沿用原值：
+        // 上游（doremy1203）的包名也是 app.floatphone.shell。若沿用，
+        // 用户装新 APK 时 Android 会先比对签名——两者签名不同（各自生成的
+        // keystore），于是安装直接失败；而用户为了装上它往往会去卸载旧版，
+        // 一卸载 WebView 里的所有数据（角色、聊天、记忆）就全没了。
+        // 换个 applicationId，两个 App 各自独立，旧数据原封不动。
+        applicationId "app.floatphone.shell.pro"
         minSdk 26
         targetSdk 34
         // versionCode 必须严格递增，否则 Android 拒绝覆盖安装（表现为「应用未安装」）。
@@ -29,6 +39,7 @@ android {
         // 1.0.11：截屏与主动查岗（含查岗浮层回复框）；通知栏「直接回复」。
         // 1.0.12：截屏可选收件人；位置感知；睡眠（Health Connect）。
         // 1.0.13：versionCode 与 versionName 对齐；启用本仓库自管的签名密钥。
+        //         改 applicationId 为 .pro 后缀，与上游版本并存不冲突。
         versionCode 13
         versionName "1.0.13"
         buildConfigField "String", "SITE_URL", "\"${siteUrl}\""

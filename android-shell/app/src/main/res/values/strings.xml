@@ -1,6 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="app_name">float</string>
+    <!-- 显示名带 -pro 后缀：与上游版本并存时，桌面图标下面必须能一眼分清哪个是哪个。
+         两个都叫「float」的话，用户只能靠图标位置猜，装错、点错是迟早的事。 -->
+    <string name="app_name">float-pro</string>
     <!-- 无障碍服务在系统「无障碍」列表里的说明文案 -->
     <string name="accessibility_service_summary">通话浮窗与界面陪伴</string>
     <string name="accessibility_service_description">让角色的通话小窗能浮在其他 App 上层，并允许角色感知当前前台 App，实现深度陪伴（仅本机使用）。</string>
