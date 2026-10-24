@@ -153,6 +153,19 @@ export type ApiConfig = {
     enableImageRecognition: boolean;
     enableImageGeneration: boolean;
     preventEmptyGenerateRambling?: boolean;
+    /**
+     * LLM 请求方式。
+     *
+     * - `server`（默认）：经本站 /api/llm-proxy 由服务端转发。第三方 API 大多
+     *   不给浏览器发 CORS 头，直连会被浏览器拦掉、只报一句 `failed to fetch`
+     *   （连状态码都没有）。走服务端出口就不存在跨域问题，API Key 也不会
+     *   出现在浏览器网络面板里。
+     * - `direct`：浏览器直连。只有当 API 明确允许跨域、且你想省掉服务器中转
+     *   时才用。
+     *
+     * 与生图设置里的 `requestMode` 同一套语义，保持两处概念一致。
+     */
+    requestMode?: "server" | "direct";
 };
 
 // --- VoiceApiConfig (migrated from voice-settings.tsx) ---

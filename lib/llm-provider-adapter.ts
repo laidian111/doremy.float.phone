@@ -258,13 +258,27 @@ export function buildProviderRequest(
     const guardedMessages = config.enableImageRecognition === true ? messages : stripVisionParts(messages);
     const providerMessages = ensureProviderHasUserMessage(normalizeNativeToolMessageAdjacency(guardedMessages));
 
-    if (providerKind === "anthropic") {
-        return buildAnthropicRequest(config, preset, baseUrl, providerMessages, options);
+    // 请求方式统一在这里决定，是**唯一**的注入点。
+    //
+    // 之所以放在 buildProviderRequest 而不是各调用点：全项目所有 LLM 请求
+    // （聊天、群聊、朋友圈、手记、剧情、桌宠、答疑、离线兜底……）都要经过这里，
+    // 在调用点逐个加标记必然漏，而漏掉的那一处就是将来「某个功能突然报
+    // failed to fetch」的来源。
+    //
+    // 默认 server：第三方 API 大多不给浏览器发 CORS 头，直连会被浏览器拦掉，
+    // 而且拦截时连 HTTP 状态码都拿不到，用户只能看到 `failed to fetch`。
+    const payload = providerKind === "anthropic"
+        ? buildAnthropicRequest(config, preset, baseUrl, providerMessages, options)
+        : providerKind === "gemini"
+            ? buildGeminiRequest(config, preset, baseUrl, providerMessages, options)
+            : buildOpenAICompatibleRequest(config, preset, baseUrl, providerMessages, options);
+
+    // 仅当用户明确选了「浏览器直连」才不转发。未设置时按 server 处理，
+    // 保证老配置升级后行为是「能用的那个」，而不是「以前那样报错的」。
+    if ((config.requestMode || "server") !== "direct") {
+        return { ...payload, serverProxy: true };
     }
-    if (providerKind === "gemini") {
-        return buildGeminiRequest(config, preset, baseUrl, providerMessages, options);
-    }
-    return buildOpenAICompatibleRequest(config, preset, baseUrl, providerMessages, options);
+    return payload;
 }
 
 // 剥离逻辑收敛到 api-helpers（更底层，微信助手运行时也照抄同一份正则）；
