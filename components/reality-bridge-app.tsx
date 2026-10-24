@@ -489,6 +489,21 @@ export function RealityBridgeApp({ onClose, onNotice, onOpenSettings }: {
    */
   const flatRuleEditor = platform.home !== "ios";
   const [mainSec, setMainSec] = useState<"overview" | "android" | "rules" | "shortcuts" | "queries" | "screen">("overview");
+  /**
+   * 当前选中的分区，这台设备到底能不能看。
+   *
+   * 导航栏已按平台隐藏了不该出现的那组，但 `mainSec` 是 state，可能是上一次
+   * 切换留下的（或在电脑上调试时点了 iOS 分区）。不兜底的话，正文区会按
+   * `mainSec === "shortcuts"` 一路渲染下去，显示一屏跟这台设备毫无关系的内容，
+   * 而导航栏上根本没有对应的高亮标签——用户会完全失去方位感。
+   */
+  const sectionVisible = mainSec === "overview"
+    || mainSec === "rules"
+    || (mainSec === "android" && platform.home === "android")
+    || ((mainSec === "shortcuts" || mainSec === "queries" || mainSec === "screen") && platform.home === "ios");
+  useEffect(() => {
+    if (!sectionVisible) setMainSec("overview");
+  }, [sectionVisible]);
   // 安卓桥分区的只读快照。这里刻意不订阅变化事件：这页只是总览，
   // 用户改完设置回来时组件会重新挂载，读到的自然是最新值。
   const perceptionDiag = useMemo(() => readPerceptionDiagnostics(), []);
@@ -1498,17 +1513,20 @@ export function RealityBridgeApp({ onClose, onNotice, onOpenSettings }: {
                       这里只把「你那套」摆出来，另一套收进下方一行切换入口——
                       想了解对面那套的人点得到，不需要的人不必先趟一遍。 */}
                   {(() => {
-                    const isAndroidHome = platform.home === "android";
-                    // 安卓设备上完全不出现 iOS 那组，也不再提供切换入口。
+                    // 两组分区各自「只在真是那台设备时才出现」。
                     //
-                    // 原来的做法是「默认显示你那套，另一套收在一行切换按钮后面」，
-                    // 本意是让想了解对面的人点得到。但实测下来这个按钮只是在
-                    // 提醒安卓用户「这里还有一套你用不了的东西」——点进去全是
-                    // 快捷指令教程、Supabase 配置、iCloud 导入，每一步在安卓上都
-                    // 做不了。既然判断得出是安卓，就不该把这条路摆在他面前。
+                    // 这里踩过一个坑：原先写的是
+                    //     const showAndroidGroup = platform.home === "android";
+                    //     {showAndroidGroup ? <安卓/> : <iOS/>}
+                    // 也就是「不是安卓就显示 iOS」。结果在**电脑浏览器**上
+                    // （platform.home === null，既不是安卓也不是 iOS）落进了
+                    // else 分支，电脑上反倒满屏都是 iPhone 快捷指令教程。
+                    // 安卓用户用电脑调试时看到的就是「iOS 选项还在」。
                     //
-                    // 反过来 iPhone 上同理：安卓本机桥那组也不出现。
-                    const showAndroidGroup = isAndroidHome;
+                    // 正确做法是两个独立判断，而不是一个二选一：
+                    // 认不出是哪台设备时，两组都不显示——谁也用不了的东西不该摆出来。
+                    const showAndroidGroup = platform.home === "android";
+                    const showIosGroup = platform.home === "ios";
                     return (
                       <div className="rb-chipbar">
                         <div className="rb-chips">
@@ -1516,13 +1534,14 @@ export function RealityBridgeApp({ onClose, onNotice, onOpenSettings }: {
                           <button type="button" className={`rb-chip${mainSec === "rules" ? " active" : ""}`} onClick={() => setMainSec("rules")}>联动</button>
                           {showAndroidGroup ? (
                             <button type="button" className={`rb-chip${mainSec === "android" ? " active" : ""}`} onClick={() => setMainSec("android")}>本机桥<em>安卓</em></button>
-                          ) : (
+                          ) : null}
+                          {showIosGroup ? (
                             <>
                               <button type="button" className={`rb-chip${mainSec === "shortcuts" ? " active" : ""}`} onClick={() => setMainSec("shortcuts")}>快捷动作<em>iOS</em></button>
                               <button type="button" className={`rb-chip${mainSec === "queries" ? " active" : ""}`} onClick={() => setMainSec("queries")}>查询<em>iOS</em></button>
                               <button type="button" className={`rb-chip${mainSec === "screen" ? " active" : ""}`} onClick={() => setMainSec("screen")}>速聊<em>iOS</em></button>
                             </>
-                          )}
+                          ) : null}
                         </div>
                       </div>
                     );
@@ -1601,7 +1620,9 @@ export function RealityBridgeApp({ onClose, onNotice, onOpenSettings }: {
                         </div>
                         {/* 「快捷动作」是 iOS 那条线的东西（角色调用后弹通知、由 iPhone
                             快捷指令执行），安卓上既建不了也用不了。与其摆一张点了就进
-                            空分区的卡片，不如在安卓上换成本机桥的入口——那才是他能用的东西。 */}
+                            空分区的卡片，不如在安卓上换成本机桥的入口——那才是他能用的东西。
+                            电脑浏览器上（home === null）两张卡片都不给：两套都跑不了，
+                            摆出来只会误导。 */}
                         {platform.home === "android" ? (
                           <div className="rb-rcard" onClick={() => setMainSec("android")}>
                             <div className="rb-rtop">
@@ -1611,7 +1632,7 @@ export function RealityBridgeApp({ onClose, onNotice, onOpenSettings }: {
                             <b>本机桥</b>
                             <p className="rb-rsum">{platform.androidBridge === "ready" ? "直接读手机状态、直接做事" : "装上 App 后可用"}</p>
                           </div>
-                        ) : (
+                        ) : platform.home === "ios" ? (
                           <div className="rb-rcard" onClick={() => setMainSec("shortcuts")}>
                             <div className="rb-rtop">
                               <span className="rb-icchip">{RB_ICON_PHONE}</span>
@@ -1620,7 +1641,7 @@ export function RealityBridgeApp({ onClose, onNotice, onOpenSettings }: {
                             <b>快捷动作</b>
                             <p className="rb-rsum">{shortcutActions.length === 0 ? "还没建过" : `共 ${shortcutActions.length} 个动作`}</p>
                           </div>
-                        )}
+                        ) : null}
                       </div>
 
                       {stats.topTypes.length > 0 ? (
