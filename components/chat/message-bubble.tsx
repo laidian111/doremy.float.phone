@@ -3,6 +3,7 @@
 import { useState, useEffect, useCallback, useRef, useMemo, memo } from "react";
 import { findCustomStickerByName, resolveCustomStickerUrl } from "@/lib/custom-sticker-storage";
 import { isMediaStoreRef, loadMediaObjectUrl } from "@/lib/media-cache-storage";
+import { formatFileSize } from "@/lib/chat-attachment";
 import { getChatImageFromIndexedDB } from "@/lib/chat-asset-storage";
 import { ChatMessage, createOrGetSession, loadChatAppSettings, resolveMeetingInviteCardConfig, updateMessageMediaStatus, updateMessageMediaData } from "@/lib/chat-storage";
 import { resolveContactCard } from "@/lib/contact-card";
@@ -1979,6 +1980,17 @@ function MediaFileBubble({
     const rawUrl = msg.mediaUrl || "";
     const fileType = msg.mediaData?.fileType || "file";
     const title = msg.mediaData?.fileName || msg.content || "";
+    // 文件大小与类型标签：用户发文档时最想确认「发对了吗、多大」。
+    const fileSizeLabel = msg.mediaData?.fileSize ? formatFileSize(msg.mediaData.fileSize) : "";
+    const fileKindLabel = (() => {
+        const ext = (title.split(".").pop() || "").toUpperCase();
+        if (ext && ext.length <= 5) return ext;
+        if (fileType === "pdf") return "PDF";
+        if (fileType === "docx") return "DOCX";
+        if (fileType === "code") return "代码";
+        if (fileType === "text") return "文本";
+        return "";
+    })();
     const [resolvedUrl, setResolvedUrl] = useState<string>(isMediaStoreRef(rawUrl) ? "" : rawUrl);
     const [expired, setExpired] = useState(false);
     const audioRef = useRef<HTMLAudioElement>(null);
@@ -2228,7 +2240,16 @@ function MediaFileBubble({
                 <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
                     <path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z" /><path d="M14 2v6h6" /><line x1="16" y1="13" x2="8" y2="13" /><line x1="16" y1="17" x2="8" y2="17" />
                 </svg>
-                <span className="chat-media-file-title">{title}</span>
+                <div className="chat-media-file-meta">
+                    <span className="chat-media-file-title">{title}</span>
+                    {/* 大小 + 类型：用户发文档时最想确认的就是「发对了吗、多大」。
+                        没有这两行的话，几个同名文件在气泡里长得一模一样。 */}
+                    {fileSizeLabel || fileKindLabel ? (
+                        <span className="chat-media-file-sub">
+                            {[fileKindLabel, fileSizeLabel].filter(Boolean).join(" · ")}
+                        </span>
+                    ) : null}
+                </div>
             </div>
             {url && <MediaSaveButton url={url} filename={ensureExtension(title, "file")} />}
         </div>

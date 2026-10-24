@@ -4,6 +4,8 @@ import { forwardRef, Fragment, memo, useCallback, useEffect, useImperativeHandle
 import { ChatSession, ChatMessage, CHAT_APP_SETTINGS_UPDATED_EVENT, CHAT_INITIAL_VISIBLE_MESSAGE_COUNT, CHAT_LOAD_MORE_MESSAGE_COUNT, CHAT_REQUEST_REPLY_EVENT, loadChatAppSettings, loadChatMessages, loadChatContacts, loadChatSessions, saveChatSessions, pushChatMessage, updateChatMessage, deleteChatMessage, deleteChatMessagesFrom, deleteChatMessagesByIds, retractChatMessage, editChatMessage, updateMessageMediaData, replaceResponseBatchWithParts, replaceGroupResponseRound, isReadingDiscussMessage, isSystemInstructionMessage, getSystemInstructionDisplayContent, createResponseBatchId, createResponseRoundId, getLatestStateValues, getLatestCharacterStateValues, compareChatMessages, isSessionStreamingEnabled, resolveChatBackgroundImage, resolveChatUserAvatar } from "@/lib/chat-storage";
 import { cleanStreamText, splitStreamPreviewSegments, stripLiteralTexts, stripXmlTagBlocks } from "@/lib/stream-preview";
 import type { StateValue } from "@/lib/chat-storage";
+import { storeMediaBlob } from "@/lib/media-cache-storage";
+import { detectFileKind, extractAttachmentText, isExtractableKind } from "@/lib/chat-attachment";
 import { parseStateValues, mergeStateValues } from "@/lib/state-value-parser";
 import { parseAIResponse, type ParsedMessagePart } from "@/lib/rich-message-parser";
 import { isKnownStickerLabel } from "@/lib/sticker-data";
@@ -675,6 +677,8 @@ const ChatTextInputBar = memo(forwardRef<ChatTextInputHandle, {
     onCloseTheaterMode: () => void;
     onOpenRichModal: (modal: RichModalKind) => void;
     onOpenCustomPlusAction: (action: RegisteredCustomAppChatPlusAction) => void;
+    /** 打开文件选择器（发送任意文件给角色） */
+    onPickFile: () => void;
     onStartVideoCall: () => void;
     onStartVoiceCall: () => void;
     onSendText: (text: string, options?: { autoReply?: boolean }) => boolean;
@@ -706,6 +710,7 @@ const ChatTextInputBar = memo(forwardRef<ChatTextInputHandle, {
     onCloseTheaterMode,
     onOpenRichModal,
     onOpenCustomPlusAction,
+    onPickFile,
     onStartVideoCall,
     onStartVoiceCall,
     onSendText,
@@ -772,6 +777,7 @@ const ChatTextInputBar = memo(forwardRef<ChatTextInputHandle, {
     );
     const suggestEnabled = !inputLocked && !panelOpen && !suggestClosed && inputText.trim().length > 0;
     const plusMenuItems = [
+        { icon: <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="var(--c-text)" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" /><polyline points="14 2 14 8 20 8" /><line x1="9" y1="15" x2="15" y2="15" /></svg>, label: "文件", onClick: onPickFile },
         { icon: <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="var(--c-text)" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2" /><circle cx="8.5" cy="8.5" r="1.5" /><polyline points="21 15 16 10 5 21" /></svg>, label: "照片墙", onClick: () => onOpenRichModal("photo") },
         { icon: <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="var(--c-text)" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2" /><line x1="7" y1="8" x2="17" y2="8" /><line x1="7" y1="12" x2="14" y2="12" /><line x1="7" y1="16" x2="11" y2="16" /></svg>, label: "文字图片", onClick: () => onOpenRichModal("text_photo") },
         { icon: <AlertCircle size={22} strokeWidth={1.5} color="var(--c-text)" />, label: "系统指令", onClick: () => onOpenRichModal("system_instruction") },
@@ -1181,6 +1187,10 @@ export function ChatRoom({ session, onBack, onDeleted }: ChatRoomProps) {
     const [imageGenerationFailure, setImageGenerationFailure] = useState<string | null>(null);
     const [cloudDeletePending, setCloudDeletePending] = useState<{ count: number } | null>(null);
     const [showPlusMenu, setShowPlusMenu] = useState(false);
+    /** 文件选择器：由「+」菜单里的「文件」触发 */
+    const fileInputRef = useRef<HTMLInputElement | null>(null);
+    /** 正在解析/发送文件：期间禁止重复点击，避免同一文件发两次 */
+    const [fileSending, setFileSending] = useState(false);
     const [customPlusActions, setCustomPlusActions] = useState<RegisteredCustomAppChatPlusAction[]>(() => loadCustomAppChatPlusActions());
     const [activeCustomChatPlus, setActiveCustomChatPlus] = useState<ActiveCustomChatPlus | null>(null);
     const [showSettings, setShowSettings] = useState(false);
@@ -4159,6 +4169,76 @@ export function ChatRoom({ session, onBack, onDeleted }: ChatRoomProps) {
         return true;
     };
 
+    /**
+     * 用户选了一个文件：存进 MediaStore，解析出文本，作为一条 media_file 消息发出。
+     *
+     * 三个设计要点：
+     *
+     * 1. **文件存本机不传云端**。用 storeMediaBlob 落 IndexedDB，
+     *    mediaUrl 存 media-store:// 引用，和项目里其他媒体走同一套。
+     *
+     * 2. **解析失败也要发**。Word/文本能读出内容最好；PDF、图片读不出时
+     *    仍然把文件发出去（角色至少知道「用户发了个 PDF」），只是提示用户
+     *    「这个格式读不了内容」。直接拒发会让用户以为功能坏了。
+     *
+     * 3. **解析结果塞进 mediaData.attachmentText**。这一层是给 prompt 用的，
+     *    由 short-term-assembler 读取后拼进模型上下文——否则角色只看到文件名。
+     */
+    const handlePickFile = useCallback(async (file: File) => {
+        if (fileSending) return;
+        if (isGenerating) {
+            showChatToast("请先等待对方回复");
+            return;
+        }
+        setFileSending(true);
+        try {
+            const kind = detectFileKind(file.name, file.type);
+            // 存文件本体（图片/音视频也走这条，渲染层按 fileType 决定怎么显示）
+            const ref = await storeMediaBlob(file, file.type || "application/octet-stream", "file");
+
+            // 解析文本：只有能读的格式才尝试，读不出不影响发送
+            let attachmentText = "";
+            let extractNote = "";
+            if (isExtractableKind(kind)) {
+                const result = await extractAttachmentText(file);
+                if (result.ok) {
+                    attachmentText = result.text;
+                    if (result.truncated) extractNote = "内容较长，只读了前面一部分";
+                } else if (result.error) {
+                    extractNote = result.error;
+                }
+            } else if (kind === "pdf") {
+                extractNote = "读不了 PDF 的文字，角色只能看到文件名";
+            }
+
+            const msg = pushChatMessage({
+                sessionId: session.id,
+                role: "user",
+                content: file.name,
+                mediaType: "media_file",
+                mediaUrl: ref,
+                mediaData: {
+                    fileType: kind,
+                    fileName: file.name,
+                    fileSize: file.size,
+                    // 这两个字段是给 prompt 用的：attachmentText 会被
+                    // short-term-assembler 读出来拼进模型上下文
+                    attachmentText: attachmentText || undefined,
+                    attachmentTruncated: attachmentText && extractNote.includes("一部分") ? true : undefined,
+                },
+            });
+            setMessages(prev => [...prev, msg]);
+            setShowPlusMenu(false);
+            setPendingGenerate(true);
+            if (extractNote) showChatToast(extractNote);
+            void triggerAIResponse();
+        } catch (err) {
+            showChatToast(`发送文件失败：${err instanceof Error ? err.message : String(err)}`);
+        } finally {
+            setFileSending(false);
+        }
+    }, [fileSending, isGenerating, session.id, triggerAIResponse]);
+
     const handleMeetingInviteAction = async (invite: ChatMessage, action: "accept" | "decline") => {
         if (invite.mediaData?.meetingInviteStatus && invite.mediaData.meetingInviteStatus !== "pending") return;
         const resolvedAt = new Date().toISOString();
@@ -6740,6 +6820,7 @@ export function ChatRoom({ session, onBack, onDeleted }: ChatRoomProps) {
 	                onCloseTheaterMode={closeTheaterMode}
 	                onOpenRichModal={(modal) => { setShowPlusMenu(false); setRichModal(modal); }}
                 onOpenCustomPlusAction={handleOpenCustomPlusAction}
+                onPickFile={() => { setShowPlusMenu(false); fileInputRef.current?.click(); }}
                 onStartVideoCall={() => { cancelFollowUp(session.id); setShowPlusMenu(false); startCall({ sessionId: session.id, characterId: session.isGroup ? "" : session.contactId, kind: "video", initiator: "user" }); }}
                 onStartVoiceCall={() => { cancelFollowUp(session.id); setShowPlusMenu(false); startCall({ sessionId: session.id, characterId: session.isGroup ? "" : session.contactId, kind: "voice", initiator: "user" }); }}
                 onSendText={handleSendText}
@@ -6748,6 +6829,21 @@ export function ChatRoom({ session, onBack, onDeleted }: ChatRoomProps) {
                 onSendSticker={(name, url) => { setShowStickerPanel(false); sendRichMessage("sticker", { label: name, stickerUrl: url }); }}
             />
             ))}
+            {/* 文件选择器：藏在 DOM 里，由「+」菜单的「文件」项 .click() 唤起。
+                放在输入栏外面（而不是输入栏组件内部），是因为它需要调用
+                chat-room 的 handlePickFile —— 那个函数要访问 session、
+                setMessages、triggerAIResponse，都属于这一层。 */}
+            <input
+                ref={fileInputRef}
+                type="file"
+                className="hidden"
+                onChange={(event) => {
+                    const picked = event.target.files?.[0];
+                    // 必须清空 value，否则连续选同一个文件时 onChange 不触发
+                    event.target.value = "";
+                    if (picked) void handlePickFile(picked);
+                }}
+            />
 
             {showConfirmMultiDelete && (
                 <ConfirmDialog

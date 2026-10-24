@@ -252,8 +252,32 @@ export type ChatMessage = {
         meetingInviteDeclineResponse?: string;
         meetingInviteResolvedAt?: string;
         meetingInviteStorySessionId?: string;
-        fileType?: "audio" | "image" | "video" | "file";
+        /**
+         * 文件类别。image/audio/video 走各自的播放器渲染，其余走通用文件卡片。
+         *
+         * 扩展了 docx/text/csv/code/pdf：这些是**用户自己发的文档**，
+         * 与「工具生成的文件」共用同一个 media_file 通道，但需要区分开来——
+         * 渲染时要知道该显示 Word 图标还是文本图标，prompt 里也要按类型
+         * 决定是附上正文还是只提一句文件名。
+         */
+        fileType?: "audio" | "image" | "video" | "file"
+            | "docx" | "text" | "csv" | "code" | "pdf";
         fileName?: string;
+        /** 文件字节数，用于气泡上显示「2.3 MB」 */
+        fileSize?: number;
+        /**
+         * 从文件里解析出来的纯文本，供 prompt 使用。
+         *
+         * 为什么存在消息上而不是临时变量：模型回复可能发生在发送后几秒到几十秒
+         * （要等上一轮生成完），临时变量早就没了；而且刷新页面后历史消息还要能
+         * 继续被模型读到。存在 mediaData 里跟着消息一起落库最稳。
+         *
+         * 只有能解析的格式（docx/txt/md/csv/代码）才有这个字段。
+         * 大文件会截断，截断时 attachmentTruncated 为 true。
+         */
+        attachmentText?: string;
+        /** 解析出的文本是否被截断（提示模型「这不是全文」） */
+        attachmentTruncated?: boolean;
         fileDuration?: number;
         useReferenceImage?: boolean; // AI photo tag: whether to send the character reference image to the generator
         imageGenerationMediaRef?: string;

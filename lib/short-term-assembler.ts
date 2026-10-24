@@ -373,9 +373,25 @@ export function loadNativeTimeline(
                 else if (msg.mediaType === "media_file") {
                     const ft = msg.mediaData?.fileType;
                     const label = msg.mediaData?.fileName || "文件";
-                    if (ft === "image") content = `[工具生成的图片:${label}]`;
+                    // 用户自己发的文档：附上解析出的正文，角色才能真正「读到」内容。
+                    //
+                    // 这是「把作业发给角色批改」这个需求的核心：只给文件名的话，
+                    // 角色只会说「我看到了一个 docx」，完全没法批改。所以这里
+                    // 把 attachmentText 整段拼进上下文，并明确标注这是用户发来的
+                    // 文件（而不是用户自己粘贴的文字）——否则角色会以为是用户在
+                    // 聊天框里打了这么多字。
+                    if (msg.mediaData?.attachmentText) {
+                        const truncatedNote = msg.mediaData.attachmentTruncated
+                            ? "\n[注意：文件较长，以上只是前面一部分，不是全文。不要声称已读完全部内容。]"
+                            : `\n[文件结束：${label}]`;
+                        content = `[用户发来文件：${label}]\n${msg.mediaData.attachmentText}${truncatedNote}`;
+                    }
+                    else if (ft === "image") content = `[工具生成的图片:${label}]`;
                     else if (ft === "audio") content = `[工具生成的音频:${label}]`;
                     else if (ft === "video") content = `[工具生成的视频:${label}]`;
+                    // 用户发来但读不了内容的文件（PDF 等）：说清楚「你收到了文件」，
+                    // 但也要让模型知道自己看不到内容，别硬编造文件里写了什么。
+                    else if (msg.role === "user") content = `[用户发来文件：${label}（这个格式的内容我看不到，只能看到文件名）]`;
                     else content = `[工具生成的文件:${label}]`;
                 }
             }
