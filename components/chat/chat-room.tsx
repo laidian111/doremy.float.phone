@@ -4198,17 +4198,17 @@ export function ChatRoom({ session, onBack, onDeleted }: ChatRoomProps) {
 
             // 解析文本：只有能读的格式才尝试，读不出不影响发送
             let attachmentText = "";
+            let truncated = false;
             let extractNote = "";
             if (isExtractableKind(kind)) {
                 const result = await extractAttachmentText(file);
                 if (result.ok) {
                     attachmentText = result.text;
-                    if (result.truncated) extractNote = "内容较长，只读了前面一部分";
+                    truncated = result.truncated;
+                    if (truncated) extractNote = "文件较长，角色只读了前面一部分";
                 } else if (result.error) {
                     extractNote = result.error;
                 }
-            } else if (kind === "pdf") {
-                extractNote = "读不了 PDF 的文字，角色只能看到文件名";
             }
 
             const msg = pushChatMessage({
@@ -4222,22 +4222,26 @@ export function ChatRoom({ session, onBack, onDeleted }: ChatRoomProps) {
                     fileName: file.name,
                     fileSize: file.size,
                     // 这两个字段是给 prompt 用的：attachmentText 会被
-                    // short-term-assembler 读出来拼进模型上下文
+                    // llm-prompt-assembler 读出来拼进模型上下文
                     attachmentText: attachmentText || undefined,
-                    attachmentTruncated: attachmentText && extractNote.includes("一部分") ? true : undefined,
+                    attachmentTruncated: truncated || undefined,
                 },
             });
             setMessages(prev => [...prev, msg]);
             setShowPlusMenu(false);
-            setPendingGenerate(true);
             if (extractNote) showChatToast(extractNote);
-            void triggerAIResponse();
+            // 与文字消息保持一致：只标记「有待回复」，不立刻触发。
+            // 用户点右下角的回复键才真正开始生成。
+            //
+            // 之前这里直接 triggerAIResponse()，结果是发文件立刻回复、
+            // 发文字要点按钮才回复——同一个输入框两套行为，很别扭。
+            setPendingGenerate(true);
         } catch (err) {
             showChatToast(`发送文件失败：${err instanceof Error ? err.message : String(err)}`);
         } finally {
             setFileSending(false);
         }
-    }, [fileSending, isGenerating, session.id, triggerAIResponse]);
+    }, [fileSending, isGenerating, session.id]);
 
     const handleMeetingInviteAction = async (invite: ChatMessage, action: "accept" | "decline") => {
         if (invite.mediaData?.meetingInviteStatus && invite.mediaData.meetingInviteStatus !== "pending") return;

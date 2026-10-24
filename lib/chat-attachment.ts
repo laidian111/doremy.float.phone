@@ -9,12 +9,16 @@
  * 只把文件名塞进 prompt，角色只会说「我看到你发了个 docx」。
  *
  * 所以这里做两件事：
- *   1. 把文件解析成纯文本（docx 用 JSZip 拆 word/document.xml）
+ *   1. 把文件解析成纯文本
  *   2. 把文本裁剪到可控长度，附在消息里送给模型
  *
- * 为什么不引入 mammoth / pdf.js：项目里已经有 jszip（备份功能在用），
- * 而 .docx 本质就是一个 zip 包，正文在 word/document.xml 里，用现成的
- * 依赖就能拆。多引一个几百 KB 的库只为了这个场景不划算。
+ * 解析器选型（都实测过）：
+ *   - .docx → JSZip 拆 word/document.xml。jszip 项目里本来就有（备份功能在用），
+ *     .docx 本质就是 zip 包，不用引 mammoth（几百 KB）。
+ *   - .pdf  → pdfjs-dist，但**动态 import**：它有 300KB+，只有真的发 PDF 时才加载，
+ *     不然所有聊天页面的首包都要背上它。
+ *   - .txt/.md/.csv/代码 → 纯 UTF-8 读取，带 GBK/UTF-16 编码识别。
+ *   - .doc（老版 OLE 二进制）→ 不解析，直接提示另存为 .docx。
  */
 
 import JSZip from "jszip";
@@ -35,7 +39,7 @@ export type AttachmentExtract =
  */
 export type AttachmentFileKind =
     | "image" | "audio" | "video"
-    | "docx" | "text" | "csv" | "code" | "pdf" | "file";
+    | "docx" | "legacy_doc" | "text" | "csv" | "code" | "pdf" | "file";
 
 /** 按扩展名判断这是什么文件，用于选解析方式和渲染图标。 */
 export function detectFileKind(fileName: string, mimeType?: string): AttachmentFileKind {
@@ -44,7 +48,10 @@ export function detectFileKind(fileName: string, mimeType?: string): AttachmentF
     if (["mp3", "wav", "m4a", "aac", "ogg", "flac"].includes(ext)) return "audio";
     if (["mp4", "mov", "webm", "mkv", "avi"].includes(ext)) return "video";
     if (ext === "pdf") return "pdf";
-    if (["docx", "doc"].includes(ext)) return "docx";
+    if (ext === "docx") return "docx";
+    // 老版 .doc 是 OLE 复合二进制，不是 zip —— 必须和 .docx 分开，
+    // 否则用户会看到「解析失败」的技术报错，而不是「另存为 docx」的建议。
+    if (ext === "doc") return "legacy_doc";
     if (["txt", "md", "markdown", "log"].includes(ext)) return "text";
     if (["csv", "tsv"].includes(ext)) return "csv";
     if (["json", "xml", "yaml", "yml", "html", "htm", "css", "js", "ts", "py", "java", "kt", "c", "cpp", "h", "go", "rs", "sh"].includes(ext)) return "code";
@@ -57,7 +64,7 @@ export function detectFileKind(fileName: string, mimeType?: string): AttachmentF
 
 /** 这个类型能不能解析出可读文本。 */
 export function isExtractableKind(kind: string): boolean {
-    return ["docx", "text", "csv", "code"].includes(kind);
+    return ["docx", "pdf", "text", "csv", "code"].includes(kind);
 }
 
 /**
@@ -213,11 +220,79 @@ async function extractPlainText(blob: Blob, kind: string): Promise<AttachmentExt
 }
 
 /**
+ * 从 PDF 里提取文字。
+ *
+ * 用 pdfjs-dist 动态 import：这是个 300KB+ 的库，只有真的发 PDF 时才需要，
+ * 静态 import 会让所有聊天页面的首包都背上它。
+ *
+ * 三个实测过的坑：
+ *   1. worker 必须关掉（disableWorker）。默认它想加载 pdf.worker.mjs，
+ *      在 Next 的浏览器打包里路径解析不了，会直接抛错。
+ *   2. 用 legacy 构建。现代构建依赖一些较新的 API，legacy 更稳。
+ *   3. cleanup() 而不是 destroy()。destroy 在这个版本上不存在（实测报错）。
+ *
+ * 扫描版 PDF（整页是图片）提不出任何文字——这不是 bug，是没有 OCR。
+ * 这种情况如实告诉用户，别让模型对着空白内容瞎编。
+ */
+async function extractPdf(blob: Blob): Promise<AttachmentExtract> {
+    try {
+        const bytes = new Uint8Array(await blob.arrayBuffer());
+        const pdfjs = await import("pdfjs-dist/legacy/build/pdf.mjs");
+        const doc = await pdfjs.getDocument({
+            data: bytes,
+            // 关掉 worker：浏览器包里 worker 文件路径解析不了（见上面第 1 点）
+            disableWorker: true,
+            useSystemFonts: true,
+            isEvalSupported: false,
+        } as Parameters<typeof pdfjs.getDocument>[0]).promise;
+
+        const pageTexts: string[] = [];
+        let totalChars = 0;
+        for (let i = 1; i <= doc.numPages; i++) {
+            const page = await doc.getPage(i);
+            const content = await page.getTextContent();
+            // items 里既有文字也有排版标记，只取有 str 的
+            const pageText = content.items
+                .map((item) => ("str" in item ? item.str : ""))
+                .join(" ")
+                .replace(/\s+/g, " ")
+                .trim();
+            if (pageText) pageTexts.push(pageText);
+            totalChars += pageText.length;
+            // 够用了就停：继续解析几十页既慢又没必要，反正最后要截断
+            if (totalChars > ATTACHMENT_TEXT_MAX_CHARS * 2) break;
+        }
+
+        try {
+            doc.cleanup();
+        } catch {
+            // 清理失败不影响结果
+        }
+
+        const joined = pageTexts.join("\n\n");
+        if (!joined.trim()) {
+            return {
+                ok: false,
+                error: "这个 PDF 提取不到文字（可能是扫描件/图片版），角色只能看到文件名",
+                kind: "pdf",
+            };
+        }
+        return clampExtract(joined, "pdf");
+    } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        // 加密 PDF 是常见情况，单独给一句人话提示
+        if (/password|encrypted/i.test(message)) {
+            return { ok: false, error: "这个 PDF 有密码保护，读不了内容", kind: "pdf" };
+        }
+        return { ok: false, error: `PDF 解析失败：${message}`, kind: "pdf" };
+    }
+}
+
+/**
  * 解析一个文件，得到可以塞进 prompt 的文本。
  *
- * 不支持的类型（pdf / 图片 / 音视频）返回 ok:false，由调用方决定怎么提示。
- * PDF 没做是因为没有现成依赖，硬塞一个 pdf.js 进来（几百 KB）
- * 对当前场景不划算——真需要时可以再加。
+ * 读不出内容的类型（图片 / 音视频 / 老版 .doc / 未知格式）返回 ok:false，
+ * 由调用方决定怎么提示——但**文件本身照常发出去**，不拒发。
  */
 export async function extractAttachmentText(file: File): Promise<AttachmentExtract> {
     const kind = detectFileKind(file.name, file.type);
@@ -229,11 +304,15 @@ export async function extractAttachmentText(file: File): Promise<AttachmentExtra
         };
     }
     if (kind === "docx") return extractDocx(file);
+    if (kind === "pdf") return extractPdf(file);
     if (kind === "text" || kind === "csv" || kind === "code") return extractPlainText(file, kind);
-    if (kind === "pdf") {
+    if (kind === "legacy_doc") {
+        // 老版 .doc 是 OLE 复合文档（开头 D0 CF 11 E0），不是 zip，
+        // JSZip 拆不动。与其让它「尝试解析然后失败」报一串技术错误，
+        // 不如直接说清楚怎么办。
         return {
             ok: false,
-            error: "暂时读不了 PDF 的内容（可以先把文字复制出来发，或另存为 .docx / .txt）",
+            error: "老版 .doc 格式读不了内容，用 Word 另存为 .docx 再发就行",
             kind,
         };
     }
@@ -242,24 +321,6 @@ export async function extractAttachmentText(file: File): Promise<AttachmentExtra
         return { ok: false, error: "", kind };
     }
     return { ok: false, error: "这个格式暂时读不了内容，角色只能看到文件名", kind };
-}
-
-/**
- * 把解析结果包成给模型看的段落。
- *
- * 格式刻意做成「用户发来一个文件」的叙述，而不是裸文本：模型看到裸文本会
- * 以为用户直接粘贴了这么多字，看到文件描述才知道这是附件、可以整体点评。
- */
-export function formatAttachmentForPrompt(params: {
-    fileName: string;
-    text: string;
-    truncated: boolean;
-}): string {
-    const head = `[用户发来文件：${params.fileName}]`;
-    const tail = params.truncated
-        ? "\n[注意：文件内容过长，以上只是前面一部分，不是全文。不要声称已读完全部内容。]"
-        : `\n[文件结束：${params.fileName}]`;
-    return `${head}\n${params.text}${tail}`;
 }
 
 /** 人类可读的文件大小。 */

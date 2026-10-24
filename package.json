@@ -38,6 +38,7 @@
     "lucide-react": "^0.575.0",
     "marked": "^17.0.4",
     "next": "^15.1.0",
+    "pdfjs-dist": "^6.4.299",
     "pinyin-pro": "^3.28.0",
     "qrcode": "^1.5.4",
     "react": "^19.0.0",

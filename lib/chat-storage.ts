@@ -261,7 +261,7 @@ export type ChatMessage = {
          * 决定是附上正文还是只提一句文件名。
          */
         fileType?: "audio" | "image" | "video" | "file"
-            | "docx" | "text" | "csv" | "code" | "pdf";
+            | "docx" | "legacy_doc" | "text" | "csv" | "code" | "pdf";
         fileName?: string;
         /** 文件字节数，用于气泡上显示「2.3 MB」 */
         fileSize?: number;
