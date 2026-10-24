@@ -134,7 +134,32 @@ export function ApiSettings() {
             const headers: Record<string, string> = { "Content-Type": "application/json" };
             if (!isGoogleNative) headers["Authorization"] = `Bearer ${config.apiKey}`;
 
-            const response = await fetch(url, { method: "GET", headers });
+            // 浏览器直连第三方 API 时，对方没开 CORS 会被浏览器拦掉，抛出的
+            // `failed to fetch` 连状态码都没有——用户只能看到一句无意义的报错，
+            // 而同一地址在原生 App（Operit 等）里却是好的，因为原生不受 CORS 约束。
+            //
+            // 所以这里做两级：先直连（能通就最省事，也不经过我们的服务器）；
+            // 直连失败再经本站 /api/llm-proxy 由服务端转发。
+            let response: Response;
+            try {
+                response = await fetch(url, { method: "GET", headers });
+            } catch (directError) {
+                try {
+                    response = await fetch("/api/llm-proxy", {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({ url, method: "GET", headers }),
+                    });
+                } catch {
+                    // 代理也失败时，抛出原始的直连错误——它更接近真实原因
+                    throw directError;
+                }
+                // 代理层自己报的错（如 SSRF 拦截、上游不可达）转成可读信息
+                if (!response.ok) {
+                    const proxyError = await response.json().catch(() => null) as { error?: string } | null;
+                    throw new Error(proxyError?.error || `转发失败：HTTP ${response.status}`);
+                }
+            }
 
             if (!response.ok) {
                 const errorData = await response.json().catch(() => ({}));
