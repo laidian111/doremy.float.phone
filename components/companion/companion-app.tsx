@@ -16,7 +16,7 @@
  */
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Settings2, Plus, Trash2 } from "lucide-react";
+import { Settings2, Plus, Trash2, ChevronLeft } from "lucide-react";
 import { CompanionCharacter } from "./companion-character";
 import { CompanionSettings } from "./companion-settings";
 import {
@@ -51,7 +51,7 @@ const STAT_ORDER: (keyof CompanionStats)[] = ["hunger", "mood", "clean", "health
 /** 可选颜色：都是柔和低饱和，避免小家伙看起来像塑料玩具。 */
 const COLOR_CHOICES = ["#f0a868", "#e8907a", "#e8c49a", "#c99a6b", "#9ad6a8", "#7fc4e8", "#a89ae8", "#f08fb8"];
 
-export function CompanionApp() {
+export function CompanionApp({ onClose }: { onClose?: () => void }) {
     const [owner, setOwner] = useState<CompanionOwner>("shared");
     const [companion, setCompanion] = useState<Companion | null>(null);
     const [showSettings, setShowSettings] = useState(false);
@@ -174,7 +174,12 @@ export function CompanionApp() {
     return (
         <div className="companion-app">
             <div className="companion-header">
-                <div>
+                {onClose && (
+                    <button className="companion-icon-btn" onClick={onClose} aria-label="返回桌面">
+                        <ChevronLeft size={17} strokeWidth={2} />
+                    </button>
+                )}
+                <div style={{ flex: 1 }}>
                     <div className="companion-title">一起养</div>
                     <div className="companion-subtitle">和 TA 共同照顾的小家伙</div>
                 </div>

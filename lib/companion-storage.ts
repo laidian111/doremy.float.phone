@@ -130,6 +130,68 @@ const HOURLY_DECAY: Record<keyof CompanionStats, number> = {
     bond: 0,
 };
 
+// ── 角色自动照顾 ──────────────────────────────────
+//
+// ── 为什么需要 ──
+// 用户的设计意图：宠物是「两个人一起养」的，如果只有用户喂，
+// 角色就是个旁观者。角色每天也该照顾，宠物状态好是两个人
+// 共同付出的结果。
+//
+// ── 为什么在结算里做，而不是定时器 ──
+// 同状态衰减的道理：手机后台定时器不可靠。把「角色该照顾了」
+// 挂在结算里，用户打开 App / 角色发起对话时都会触发结算，
+// 照顾就顺带发生了，永远不漏。
+
+/**
+ * 角色自动照顾的触发条件：距离上次结算超过这个小时数，
+ * 且宠物有状态低于「角色看不下去」的阈值。
+ */
+const AUTO_CARE_MIN_HOURS = 6;
+
+/** 角色看哪项状态决定出手。任意一项低于它，角色就照顾。 */
+const AUTO_CARE_THRESHOLD = 45;
+
+/**
+ * 角色自动照顾一次。
+ *
+ * 返回值给调用方（提示词组装/工具返回）当叙事素材：「她今天中午喂过它了」。
+ * 没触发时返回 null。
+ *
+ * @param companion 已结算的宠物
+ * @param ownerKey 归属（用来找是哪只）
+ */
+export function tryAutoCare(
+    companion: Companion,
+    ownerKey: CompanionOwner,
+    nowMs: number = Date.now(),
+): { actionId: CompanionActionId; deltas: Partial<CompanionStats> } | null {
+    const config = loadCompanionConfig();
+    if (!config.enabled || !config.allowCharacterCare) return null;
+
+    const lastTick = new Date(companion.lastTickAt).getTime();
+    if (!Number.isFinite(lastTick)) return null;
+    const hoursSince = (nowMs - lastTick) / 3_600_000;
+    if (hoursSince < AUTO_CARE_MIN_HOURS) return null;
+
+    // 挑最缺的那项照顾。顺序有讲究：健康 > 饥饿 > 心情 > 清洁，
+    // 健康出问题最要紧。
+    const s = companion.stats;
+    let actionId: CompanionActionId | null = null;
+    if (s.health <= AUTO_CARE_THRESHOLD) actionId = "medicine";
+    else if (s.hunger <= AUTO_CARE_THRESHOLD) actionId = "feed";
+    else if (s.mood <= AUTO_CARE_THRESHOLD) actionId = "play";
+    else if (s.clean <= AUTO_CARE_THRESHOLD) actionId = "clean";
+    else if (hoursSince >= 24) {
+        // 状态都还好，但一整天没人理：陪玩一下，体现「有人惦记它」
+        actionId = "pet";
+    }
+    if (!actionId) return null;
+
+    const result = performCompanionAction(ownerKey, actionId, nowMs);
+    if (!result.ok) return null;
+    return { actionId, deltas: result.deltas };
+}
+
 /**
  * 每项状态的「舒适地板」：跌到这里之后衰减速度降到 20%。
  *
@@ -446,14 +508,30 @@ export function buildCompanionPromptContext(characterId?: string | null): string
         candidates.push("shared");
 
         let companion: Companion | null = null;
-        for (const owner of candidates) {
-            companion = findCompanion(owner);
-            if (companion) break;
+        let matchedOwner: CompanionOwner | null = null;
+        for (const candidate of candidates) {
+            companion = findCompanion(candidate);
+            if (companion) { matchedOwner = candidate; break; }
         }
-        if (!companion) return "";
+        if (!companion || !matchedOwner) return "";
 
         // 结算到此刻再描述，免得说「它很饿」但其实用户刚喂过
-        const settled = decayCompanion(companion, Date.now(), config.decayRate);
+        let settled = decayCompanion(companion, Date.now(), config.decayRate);
+
+        // 角色自动照顾：聊天开始时结算完看一眼，该出手就出手。
+        // 结果写回存储，并作为叙事素材告诉角色「你刚照顾过它」——
+        // 这样她说「我今天中午喂过它了」是有事实依据的，不是编的。
+        let autoCareNote = "";
+        const careResult = tryAutoCare(settled, matchedOwner, Date.now());
+        if (careResult) {
+            const refreshed = findCompanion(matchedOwner);
+            if (refreshed) {
+                settled = decayCompanion(refreshed, Date.now(), config.decayRate);
+            }
+            const actionLabel = COMPANION_ACTIONS.find(a => a.id === careResult.actionId)?.label || "照顾";
+            autoCareNote = `（刚才你${actionLabel}了它，这是你作为主人之一的日常照顾）`;
+        }
+
         const mood = resolveCompanionMood(settled.stats);
         const day = companionDayCount(settled);
         const speciesLabel = config.customSpeciesLabels[settled.species] || SPECIES_META[settled.species].label;
@@ -461,9 +539,10 @@ export function buildCompanionPromptContext(characterId?: string | null): string
         return [
             `【一起养】你和{{user}}共同养着一只${speciesLabel}，叫「${settled.name}」，今天是第 ${day} 天。`,
             `它现在${COMPANION_MOOD_TEXT[mood]}。`,
-            "你可以自然地在聊天里提到它，也可以主动去看看它、照顾它（用「一起养」工具）。",
+            autoCareNote,
+            "它是你们两个人一起养的：状态好不好取决于你们俩谁在照顾。你也可以在聊天里自然地提到它、去照顾它（用「一起养」工具）。",
             "不用每句话都提，也别像汇报一样列数据——它只是你们生活里的一部分。",
-        ].join("\n");
+        ].filter(Boolean).join("\n");
     } catch {
         // 提示词组装失败不该阻断对话
         return "";
