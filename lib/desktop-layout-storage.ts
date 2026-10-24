@@ -233,8 +233,7 @@ export function appendMissingCustomAppIcons(
   return next;
 }
 
-// ── Desktop folders ───────────────────────────────────
-// 文件夹内容表：folder:xxx → { name, icons }。tile 本身作为普通图标
+// ── Desktop folders ───────────────────────────────────// 文件夹内容表：folder:xxx → { name, icons }。tile 本身作为普通图标
 // 存在分页布局里；这张表只管"里面装了什么、叫什么"。
 
 export type DesktopFolder = { name: string; icons: DesktopIconId[] };
