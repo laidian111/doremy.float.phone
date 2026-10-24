@@ -707,6 +707,11 @@ export function RealityBridgeApp({ onClose, onNotice, onOpenSettings }: {
       else if (schedule.kind === "weekly") parts.push(`每周${["日", "一", "二", "三", "四", "五", "六"][schedule.weekday ?? 1]} ${schedule.time ?? "08:00"}`);
       else parts.push(`每天 ${schedule.time ?? "08:00"}`);
     }
+    // 安静时段必须出现在摘要里：它是一条「让规则在部分时间不生效」的设置，
+    // 不显示的话，用户看到「每隔 30 分钟」会以为半夜也会发，从而不敢用这条规则。
+    if (rule.quietHours?.enabled) {
+      parts.push(`安静时段 ${rule.quietHours.start}–${rule.quietHours.end} 不打扰`);
+    }
     const a = rule.actions;
     if (a.chat) {
       const who = charName(a.chat.characterId);
@@ -2194,6 +2199,63 @@ export function RealityBridgeApp({ onClose, onNotice, onOpenSettings }: {
                 </p>
               </>
             )}
+
+            {/* ── 安静时段 ──
+                放在定时/信号两套设置之后、触发间隔之前：它是「什么时候别打扰我」
+                这一层的设置，对两类规则都生效，所以不该塞进 schedule 分支里。 */}
+            <div className="rb-quiet-block">
+              <label className="rb-quiet-toggle">
+                <input
+                  type="checkbox"
+                  checked={editing.quietHours?.enabled ?? false}
+                  onChange={event => setEditing({
+                    ...editing,
+                    quietHours: event.target.checked
+                      ? { enabled: true, start: editing.quietHours?.start ?? "23:00", end: editing.quietHours?.end ?? "08:00", logSkipped: editing.quietHours?.logSkipped ?? true }
+                      : undefined,
+                  })}
+                />
+                <span>设置安静时段</span>
+              </label>
+              <p className="rb-hint">
+                这段时间内不执行任何动作。对「每隔多少分钟」这类规则尤其重要——否则半夜也会照发。
+              </p>
+              {editing.quietHours?.enabled ? (
+                <>
+                  <div className="rb-action-body grid2">
+                    <label>从
+                      <input type="time" value={editing.quietHours.start}
+                        onChange={event => setEditing({
+                          ...editing,
+                          quietHours: { ...editing.quietHours!, start: event.target.value || "23:00" },
+                        })} />
+                    </label>
+                    <label>到
+                      <input type="time" value={editing.quietHours.end}
+                        onChange={event => setEditing({
+                          ...editing,
+                          quietHours: { ...editing.quietHours!, end: event.target.value || "08:00" },
+                        })} />
+                    </label>
+                  </div>
+                  <p className="rb-hint">
+                    结束时间早于开始时间表示跨过午夜，例如 23:00 → 08:00。
+                    安静时段内的定时规则直接跳过不补发；已排队的延迟动作会顺延到结束之后执行。
+                  </p>
+                  <label className="rb-quiet-toggle">
+                    <input
+                      type="checkbox"
+                      checked={editing.quietHours.logSkipped !== false}
+                      onChange={event => setEditing({
+                        ...editing,
+                        quietHours: { ...editing.quietHours!, logSkipped: event.target.checked },
+                      })}
+                    />
+                    <span>在接收记录里留下「已跳过」的痕迹</span>
+                  </label>
+                </>
+              ) : null}
+            </div>
             <label>触发间隔
               <select
                 value={editing.cooldownMinutes ?? 0}

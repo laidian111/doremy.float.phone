@@ -866,6 +866,37 @@
 .rb-action-body.grid2 select { width: 100%; }
 .rb-editor-btns { display: flex; gap: 10px; margin-top: 2px; }
 .rb-editor-btns .rb-btn { flex: 1; padding: 13px 0; font-size: 14px; }
+
+/* ── 安静时段 ──
+   整块用左侧细线框起来，和上下「信号名/触发间隔」这些逐项设置区分开：
+   它是一条作用在时间维度的开关，不是又一个填空项。 */
+.rb-quiet-block {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  margin: 12px 0 4px;
+  padding: 11px 12px;
+  border-radius: 12px;
+  border: 1px solid rgba(120, 110, 150, 0.16);
+  background: rgba(120, 110, 150, 0.045);
+}
+.rb-quiet-toggle {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.rb-quiet-toggle input[type="checkbox"] {
+  width: 17px;
+  height: 17px;
+  margin: 0;
+  accent-color: var(--rb-accent, #7c5cff);
+  cursor: pointer;
+}
+/* 安静时段里的两列时间框不要左侧缩进——那块缩进是给动作子选项的 */
+.rb-quiet-block .rb-action-body { padding-left: 0; }
 .rb-del-link {
   border: none;
   background: none;

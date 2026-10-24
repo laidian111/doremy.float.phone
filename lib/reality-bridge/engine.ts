@@ -431,6 +431,15 @@ export async function processBridgeItem(item: BridgeItem): Promise<BridgeFeedEnt
     receivedAt: new Date().toISOString(),
   };
   for (const rule of rules) {
+    // 安静时段：夜里收到信号也照样不执行。
+    // 放在触发间隔之前判——安静时段是「现在别打扰」，优先级高于任何频率控制；
+    // 而且这样不会因为夜里触发一次而白占掉触发间隔。
+    if (isInQuietHours(rule.quietHours)) {
+      if (rule.quietHours?.logSkipped !== false) {
+        entry.actions.push(`「${rule.name}」处于安静时段，这次不执行`);
+      }
+      continue;
+    }
     // 触发间隔：间隔内再次收到同信号，只存档不执行（避免反复打开某 APP 时刷屏）
     const cooldownMs = Math.max(0, Number(rule.cooldownMinutes) || 0) * 60_000;
     if (cooldownMs > 0 && Date.now() - getBridgeRuleLastRunAt(rule.id) < cooldownMs) {
@@ -506,6 +515,29 @@ export async function runDueDelayedTasks(): Promise<number> {
       });
       continue;
     }
+    // 延迟任务到点时正好落在安静时段：**顺延到安静时段结束**，不丢弃。
+    //
+    // 与定时规则的「直接跳过」不同，这里刻意不丢：延迟是用户明确排的
+    // 一次性动作（「十分钟后提醒我」），丢了就再也不会发生；而定时规则
+    // 明天还有下一次，跳过无所谓。顺延既守住了「别半夜吵我」，也没让
+    // 用户排的事凭空消失。
+    if (isInQuietHours(rule.quietHours)) {
+      const resumeAt = nextQuietHoursEnd(rule.quietHours);
+      if (resumeAt) {
+        const rescheduled = loadDelayedTasks();
+        rescheduled.push({ ...task, dueAt: resumeAt.getTime() });
+        saveDelayedTasks(rescheduled);
+        appendBridgeFeed({
+          id: task.id,
+          type: task.item.type,
+          payload: task.item.payload.slice(0, 2000),
+          rules: [task.ruleName],
+          actions: [`处于安静时段，顺延到 ${formatHhMm(resumeAt)} 执行`],
+          receivedAt: new Date().toISOString(),
+        });
+        continue;
+      }
+    }
     try {
       const actions = await runActions(rule, task.item, task.text);
       appendBridgeFeed({
@@ -536,6 +568,66 @@ export async function runDueDelayedTasks(): Promise<number> {
 
 // ── 定时触发 ──
 
+/** 把 "HH:MM" 解析成当天的分钟数（0–1439）；格式不对返回 null。 */
+function parseHhMm(value: string | undefined): number | null {
+  const matched = /^(\d{1,2}):(\d{2})$/.exec((value || "").trim());
+  if (!matched) return null;
+  const hour = Number(matched[1]);
+  const minute = Number(matched[2]);
+  if (hour > 23 || minute > 59) return null;
+  return hour * 60 + minute;
+}
+
+/**
+ * 现在是不是落在这条规则的安静时段里。
+ *
+ * 跨午夜必须单独处理：23:00 → 08:00 是最常见的一段，如果写成
+ * `now >= start && now <= end`，这段区间永远为假（起点比终点大），
+ * 于是「晚上十一点到早上八点别吵我」这条设置会完全失效——而它恰恰是
+ * 用户最想要的那条。所以按 start > end 判为跨天，拆成两段取并集。
+ */
+export function isInQuietHours(
+  quietHours: BridgeRule["quietHours"],
+  now: Date = new Date(),
+): boolean {
+  if (!quietHours?.enabled) return false;
+  const start = parseHhMm(quietHours.start);
+  const end = parseHhMm(quietHours.end);
+  if (start == null || end == null) return false;
+  // 起止相同视为「没设」，否则会整天静音，用户会以为规则坏了
+  if (start === end) return false;
+
+  const current = now.getHours() * 60 + now.getMinutes();
+  return start < end
+    ? current >= start && current < end
+    : current >= start || current < end;
+}
+
+/**
+ * 安静时段结束的时刻（用于把延迟任务顺延过去）。
+ * 传入的时刻必须落在安静时段内，否则返回 null。
+ */
+export function nextQuietHoursEnd(
+  quietHours: BridgeRule["quietHours"],
+  now: Date = new Date(),
+): Date | null {
+  if (!quietHours?.enabled) return null;
+  const end = parseHhMm(quietHours.end);
+  if (end == null) return null;
+  if (!isInQuietHours(quietHours, now)) return null;
+
+  const result = new Date(now);
+  result.setHours(Math.floor(end / 60), end % 60, 0, 0);
+  // 结束时刻已经过去（跨午夜的情况，比如现在 23:30、安静时段 23:00–08:00），
+  // 说明结束在「明天」，推到下一天。
+  if (result.getTime() <= now.getTime()) result.setDate(result.getDate() + 1);
+  return result;
+}
+
+function formatHhMm(date: Date): string {
+  return `${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`;
+}
+
 /**
  * 这条定时规则现在该不该跑。
  *
@@ -543,6 +635,9 @@ export async function runDueDelayedTasks(): Promise<number> {
  * 过了点、且上次跑的时间早于这个基准，才算该跑。这样一天只会命中一次，
  * 而不是每轮轮询都触发一遍。App 关了几天再打开，最多补跑一次——
  * 补三次「早安」比漏掉更糟。
+ *
+ * 安静时段在**最前面**拦：它比「到没到点」优先。否则一条「每 30 分钟」的
+ * 规则会在凌晨三点照样满足间隔条件，安静时段形同虚设。
  */
 function isScheduleDue(
   rule: BridgeRule,
@@ -551,6 +646,10 @@ function isScheduleDue(
 ): boolean {
   const schedule = rule.schedule;
   if (!schedule) return false;
+
+  // 安静时段内一律不触发，也不补发。
+  // 不补发是刻意的：攒到早上一次性蹦出七条「该喝水了」比不发更烦人。
+  if (isInQuietHours(rule.quietHours, now)) return false;
 
   if (schedule.kind === "interval") {
     const minutes = Math.max(1, Math.min(10080, Number(schedule.minutes) || 0));
