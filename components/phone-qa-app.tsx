@@ -68,6 +68,8 @@ import {
   QA_DEFAULT_MAX_OUTPUT_TOKENS,
   QA_MAX_OUTPUT_TOKENS_MIN,
   QA_MAX_OUTPUT_TOKENS_MAX,
+  getQaPersonaPrompt,
+  setQaPersonaPrompt,
 } from "@/lib/qa-prefs";
 import { resolveQaApiConfig } from "@/lib/qa-agent-engine";
 import {
@@ -564,6 +566,8 @@ function QaSettingsSheet({ onClose, onNotice }: { onClose: () => void; onNotice?
     const v = getQaMaxOutputTokens();
     return v == null ? "" : String(v);
   });
+  // 人设覆盖：空串表示用内置默认（与小卷 personaPrompt 同一套语义）
+  const [personaPrompt, setPersonaPrompt] = useState(() => getQaPersonaPrompt());
   const usedChars = getQaActiveContextChars();
   const pct = Math.round((usedChars / getQaContextBudgetChars()) * 100);
 
@@ -594,6 +598,8 @@ function QaSettingsSheet({ onClose, onNotice }: { onClose: () => void; onNotice?
     setQaMaxRounds(parsedRounds);
     // 留空 = 显式不传 max_tokens（0 哨兵），与"没设置用默认值"区分开
     setQaMaxOutputTokens(trimmedTokens ? parsedTokens : 0);
+    // 人设：留空即恢复内置默认（setter 内部会删掉存储键）
+    setQaPersonaPrompt(personaPrompt);
     onNotice?.("已保存工坊配置。");
     onClose();
   };
@@ -603,10 +609,12 @@ function QaSettingsSheet({ onClose, onNotice }: { onClose: () => void; onNotice?
     setQaPageChars(null);
     setQaMaxRounds(null);
     setQaMaxOutputTokens(null);
+    setQaPersonaPrompt(null);
     setBudget(String(QA_DEFAULT_CONTEXT_BUDGET_CHARS));
     setPageChars(String(QA_DEFAULT_PAGE_CHARS));
     setMaxRounds(String(QA_DEFAULT_MAX_ROUNDS));
     setMaxOutTokens(String(QA_DEFAULT_MAX_OUTPUT_TOKENS));
+    setPersonaPrompt("");
     onNotice?.("已恢复默认配置。");
   };
 
@@ -614,6 +622,19 @@ function QaSettingsSheet({ onClose, onNotice }: { onClose: () => void; onNotice?
     <div className="qa-devnotice-backdrop" onClick={onClose}>
       <div className="qa-devnotice" role="dialog" aria-label="工坊配置" onClick={(e) => e.stopPropagation()}>
         <div className="qa-devnotice-title">工坊配置</div>
+        <label className="qa-settings-field">
+          <span>自定义系统提示词（人设）</span>
+          <textarea
+            className="qa-settings-textarea"
+            rows={8}
+            value={personaPrompt}
+            onChange={(e) => setPersonaPrompt(e.target.value)}
+            placeholder={`留空 = 使用内置的小坊人设。\n填入后整段替换人设，但产品知识库与工具说明仍会自动附加在后面。`}
+          />
+        </label>
+        <div className="qa-settings-hint">
+          改的是小坊「是谁、怎么说话」，不改它能查的资料和能用的工具。想让它换个语气、换个身份设定，写在这里即可；留空恢复内置人设。
+        </div>
         <label className="qa-settings-field">
           <span>上下文预算（字符）</span>
           <input

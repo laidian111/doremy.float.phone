@@ -91,3 +91,33 @@ export function setQaMaxRounds(rounds: number | null): void {
         // ignore
     }
 }
+
+// ── 自定义系统提示词（人设覆盖）────────────────────────
+// 与小卷的 personaPrompt 同一套语义：留空 = 用内置人设，填了 = 整段替换。
+//
+// 为什么是「替换」而不是「追加」：用户说「改系统提示词」，要的是能彻底改掉
+// 工坊的说话方式与定位。追加式会在原人设后面再叠一段，两段语气打架时模型
+// 往往听前面那段，用户会以为设置没生效。
+//
+// 注意知识库与工具说明**不受影响**：它们由 buildQaSystemPrompt 在调用时
+// 另行拼接，人设只占其中第一节。这样用户改人设不会把工坊改瞎（丢掉产品知识）。
+export const QA_PERSONA_PROMPT_MAX_CHARS = 20_000;
+
+export function getQaPersonaPrompt(): string {
+    try {
+        return (localStorage.getItem("ai_phone_qa_persona_prompt") || "").trim();
+    } catch {
+        return "";
+    }
+}
+
+/** 设置自定义人设（null 或空白 = 恢复内置默认） */
+export function setQaPersonaPrompt(prompt: string | null): void {
+    try {
+        const trimmed = (prompt || "").trim();
+        if (!trimmed) localStorage.removeItem("ai_phone_qa_persona_prompt");
+        else localStorage.setItem("ai_phone_qa_persona_prompt", trimmed.slice(0, QA_PERSONA_PROMPT_MAX_CHARS));
+    } catch {
+        // ignore
+    }
+}

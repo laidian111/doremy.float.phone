@@ -1,6 +1,7 @@
 import { CUSTOM_APP_CREATOR_GUIDE_MD } from "./custom-app-creator-guide";
 import { GAME_CREATOR_GUIDE_MD } from "./game-creator-guide";
 import { CHAT_PLUGIN_FULL_DOC } from "./chat-plugin-docs";
+import { getQaPersonaPrompt } from "./qa-prefs";
 
 // ── 答疑 App 知识库 ──────────────────────────────────
 // P0：基础知识全量注入 system prompt；专题文档按用户问题关键词按需附加。
@@ -103,7 +104,13 @@ const QA_PERSONA_LINES = [
 ];
 
 export function buildQaSystemPrompt(latestUserText: string): string {
-  const sections = [QA_PERSONA_LINES.join("\n"), "以下是产品知识库：", QA_BASE_KNOWLEDGE_MD];
+  // 人设可被用户覆盖（工坊侧边栏「工坊配置」里编辑），语义与小卷的
+  // personaPrompt 一致：留空用内置默认，填了就整段替换。
+  //
+  // 只替换第一节人设，知识库与专题文档照旧拼在后面——这样用户改说话风格
+  // 不会顺手把工坊的产品知识一起改没，改完仍然是能干活的工坊。
+  const persona = getQaPersonaPrompt() || QA_PERSONA_LINES.join("\n");
+  const sections = [persona, "以下是产品知识库：", QA_BASE_KNOWLEDGE_MD];
   const topics = pickQaTopicDocs(latestUserText);
   for (const topic of topics) {
     sections.push(`## 附：${topic.label}（用户问题涉及该专题）`, topic.content);

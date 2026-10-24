@@ -1754,6 +1754,30 @@
 .qa-settings-field input:focus {
   border-color: var(--qa-accent);
 }
+
+/* 自定义系统提示词的编辑框：与 input 同一套观感，但允许多行、可纵向拉伸。
+   人设通常要写几段话，单行输入框根本没法编辑，所以单独给 textarea 一条规则。 */
+.qa-settings-field textarea {
+  width: 100%;
+  padding: 9px 12px;
+  border-radius: 12px;
+  border: 1px solid rgba(60, 50, 90, 0.14);
+  background: var(--qa-bg-raised);
+  color: var(--qa-text-primary);
+  font-size: 14px;
+  line-height: 1.6;
+  font-family: inherit;
+  outline: none;
+  resize: vertical;
+  min-height: 96px;
+}
+.qa-settings-field textarea:focus {
+  border-color: var(--qa-accent);
+}
+.qa-settings-field textarea::placeholder {
+  color: var(--qa-text-tertiary);
+  opacity: 0.8;
+}
 .qa-settings-hint {
   margin-top: 8px;
   font-size: 11px;
