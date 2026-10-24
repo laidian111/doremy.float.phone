@@ -616,13 +616,17 @@ const BUILTIN_SEARCH: RestToolConfig = {
     id: "builtin_search",
     name: "搜索",
     description: "搜索互联网获取最新信息",
-    endpoint: "https://api.tavily.com/search",
+    // 走项目自己的 /api/web-search：Tavily 响应里没有任何 CORS 头，
+    // 浏览器直连必然被拦（报错就是 Failed to fetch），跟 key 填没填无关。
+    // 服务端转发既绕过 CORS，也不用把 key 暴露在前端。
+    endpoint: "/api/web-search",
     method: "POST",
     parameterSchema: JSON.stringify({
         type: "object",
         properties: {
             query: { type: "string", description: "搜索关键词" },
         },
+        required: ["query"],
     }),
     fixedParams: { api_key: "" },  // 用户需在设置中填入 Tavily API Key
     directFetch: true,

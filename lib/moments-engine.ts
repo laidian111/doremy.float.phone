@@ -71,6 +71,7 @@ import {
 let started = false;
 let isGenerating = false;
 let cancelReactionPoll: (() => void) | null = null;
+let visibilityHandler: (() => void) | null = null;
 const firingSet = new Set<string>();
 
 // ── Public API ──
@@ -80,11 +81,52 @@ export function startMomentsService() {
     started = true;
     staggerOverduePosts();
     startReactionPoll(); // unified poll handles both reactions AND scheduled posts
+    startVisibilityCatchUp();
 }
 
 export function stopMomentsService() {
     stopReactionPoll();
+    stopVisibilityCatchUp();
     started = false;
+}
+
+/**
+ * 回到前台时立刻补跑一次待办。
+ *
+ * 为什么必须有这个：轮询靠 Web Worker 心跳，能绕开标签页节流，
+ * 但在手机（尤其 Android WebView）上，进程进入后台被系统冻结或杀掉时
+ * Worker 同样停摆。用户的实际体验就是「我发了朋友圈，退出后台就没人回」——
+ * 定时器停的那段时间里到期的评论/点赞任务没人处理。
+ *
+ * 不补跑的话，回来后要等下一个 30 秒轮询；而如果进程被杀过，
+ * 引擎重启时 pending 任务虽然还在（存在 storage 里），但用户已经
+ * 以为「没人理我」了。补跑让这些积压任务立刻兑现。
+ */
+function startVisibilityCatchUp() {
+    if (visibilityHandler || typeof document === "undefined") return;
+    visibilityHandler = () => {
+        if (document.visibilityState !== "visible") return;
+        // 立刻跑一次，不等下一个轮询周期
+        try {
+            pollPendingReactions();
+        } catch (err) {
+            console.warn("[Moments] catch-up poll failed:", err);
+        }
+    };
+    document.addEventListener("visibilitychange", visibilityHandler);
+    // 从后台被系统恢复时（WebView 常见）也会触发 pageshow
+    window.addEventListener("pageshow", visibilityHandler);
+}
+
+function stopVisibilityCatchUp() {
+    if (!visibilityHandler) return;
+    if (typeof document !== "undefined") {
+        document.removeEventListener("visibilitychange", visibilityHandler);
+    }
+    if (typeof window !== "undefined") {
+        window.removeEventListener("pageshow", visibilityHandler);
+    }
+    visibilityHandler = null;
 }
 
 // ── Scheduling ──
@@ -382,6 +424,29 @@ async function triggerAIPost(characterId: string): Promise<void> {
 /** Called when user publishes a post — trigger AI reactions. */
 export function onUserPost(post: MomentPost): void {
     triggerAIReactionsForPost(post, "user");
+}
+
+/**
+ * 立刻给某条动态补一轮互动（角色评论/点赞 + NPC 互动）。
+ *
+ * 为什么需要手动触发：正常流程靠后台轮询在 30 秒~几分钟后兑现，
+ * 但手机进后台被冻结/杀进程时任务会一直积压，用户看到的就是
+ * 「我发了动态，没人理」。这个函数让用户能主动催一次，
+ * 不用等（也不用懂）后台调度。
+ *
+ * 会把这条动态上**尚未兑现**的旧任务先清掉，避免补催之后
+ * 又来一轮重复评论。
+ */
+export function triggerReactionsNow(postId: string): void {
+    const posts = loadMomentPosts();
+    const post = posts.find(p => p.id === postId);
+    if (!post) return;
+
+    // 清掉这条动态积压的旧任务，防止补催后重复互动
+    const stale = loadPendingReactions().filter(t => t.postId === postId);
+    for (const t of stale) removePendingReaction(t.id);
+
+    triggerAIReactionsForPost(post, post.authorType === "user" ? "user" : "character");
 }
 
 // ── NPC Reactions (for character posts) ──

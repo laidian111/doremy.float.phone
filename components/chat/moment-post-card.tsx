@@ -19,6 +19,7 @@ import { buildTwoLevelMomentThreads } from "@/lib/moments-comment-threading";
 import { getChatImageFromIndexedDB } from "@/lib/chat-asset-storage";
 import { splitBilingualText } from "@/lib/bilingual-text";
 import { retryMomentGeneratedPhoto } from "@/lib/generated-image-retry";
+import { triggerReactionsNow } from "@/lib/moments-engine";
 import { hasCharacterReferenceImage } from "@/lib/image-generation-service";
 import { GeneratedImageErrorDialog } from "./generated-image-error-dialog";
 import { Trash2, MoreHorizontal, MapPin, Heart, MessageCircle, Pencil } from "lucide-react";
@@ -152,6 +153,21 @@ export function MomentPostCard({ post, onUpdate, onRequestDelete, onOpenCommentC
         if (onRequestDelete) {
             onRequestDelete(post.id);
         }
+    };
+
+    /**
+     * 手动催一次互动。
+     *
+     * 场景：手机进后台时后台轮询会被冻结，积压的评论/点赞任务不兑现，
+     * 用户看到的就是「发了动态没人理」。与其让用户等（或以为坏了），
+     * 不如给个按钮立刻催一轮。
+     */
+    const [reactionRequested, setReactionRequested] = useState(false);
+    const handleRequestReactions = () => {
+        triggerReactionsNow(post.id);
+        setReactionRequested(true);
+        // 3 秒后恢复按钮，允许再催一次（用户可能觉得互动太少）
+        window.setTimeout(() => setReactionRequested(false), 3000);
     };
 
     const dispatchMomentsUpdated = () => {
@@ -335,6 +351,17 @@ export function MomentPostCard({ post, onUpdate, onRequestDelete, onOpenCommentC
                         <button type="button" onClick={openPostEditor}>
                             <Pencil size={14} strokeWidth={1.75} />
                             <span>编辑动态</span>
+                        </button>
+                        <button
+                            type="button"
+                            disabled={reactionRequested}
+                            onClick={() => {
+                                setShowPostActions(false);
+                                handleRequestReactions();
+                            }}
+                        >
+                            <MessageCircle size={14} strokeWidth={1.75} />
+                            <span>{reactionRequested ? "已经催了…" : "催一下互动"}</span>
                         </button>
                         {onRequestDelete && (
                             <button
