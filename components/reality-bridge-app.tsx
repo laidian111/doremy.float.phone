@@ -30,6 +30,7 @@ import {
   type ScreenChatSettings,
 } from "@/lib/reality-bridge/storage";
 import type { BridgeRule } from "@/lib/reality-bridge/types";
+import { draftRuleFromText, type RuleDraft } from "@/lib/reality-bridge/rule-builder";
 import { createShortcutCommand, loadRecentShortcutCommands, type ShortcutCommand } from "@/lib/shortcut-command-client";
 import { enableOfflinePush, isShellEnvironment, sendShellTestPush } from "@/lib/push-client";
 import { describeBridgePlatform } from "@/lib/shell-detect";
@@ -238,6 +239,8 @@ const RB_ICON_REFRESH = <svg {...RB_SVG}><path d="M21 12a9 9 0 1 1-3-6.7L21 8" /
 const RB_ICON_CHEVRON = <svg {...RB_SVG}><path d="M14.5 5.5 8 12l6.5 6.5" /></svg>;
 const RB_ICON_DOTS = <svg viewBox="0 0 24 24" fill="currentColor"><circle cx="5" cy="12" r="1.9" /><circle cx="12" cy="12" r="1.9" /><circle cx="19" cy="12" r="1.9" /></svg>;
 const RB_ICON_ARROW = <svg {...RB_SVG}><path d="M9.5 5.5 16 12l-6.5 6.5" /></svg>;
+/** 「用大白话创建」入口的图标：一颗四角星，与「AI 生成」的通用语感一致 */
+const RB_ICON_SPARK = <svg {...RB_SVG}><path d="M12 3v4M12 17v4M3 12h4M17 12h4M6.3 6.3l2.8 2.8M14.9 14.9l2.8 2.8M17.7 6.3l-2.8 2.8M9.1 14.9l-2.8 2.8" /></svg>;
 const RB_ICON_TRASH = <svg {...RB_SVG}><path d="M3 6h18" /><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6" /><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" /><path d="M10 11v6M14 11v6" /></svg>;
 const RB_ICON_CROSS = <svg {...RB_SVG}><path d="M6 6l12 12M18 6 6 18" /></svg>;
 const RB_ICON_CLOCK = <svg {...RB_SVG}><circle cx="12" cy="12" r="9" /><path d="M12 7v5l3 2" /></svg>;
@@ -427,6 +430,14 @@ export function RealityBridgeApp({ onClose, onNotice, onOpenSettings }: {
   const [rules, setRules] = useState<BridgeRule[]>(() => loadBridgeRules());
   const [feed, setFeed] = useState(() => loadBridgeFeed());
   const [editing, setEditing] = useState<BridgeRule | null>(null);
+  /** 「用大白话创建」的输入框内容 */
+  const [aiPrompt, setAiPrompt] = useState("");
+  /** 生成中：禁用按钮，防止连点触发多次 LLM 请求 */
+  const [aiDrafting, setAiDrafting] = useState(false);
+  /** 生成出来的草案（用户确认后才进编辑器） */
+  const [aiDraft, setAiDraft] = useState<RuleDraft | null>(null);
+  /** 生成失败的原因（配不出规则 / 接口报错） */
+  const [aiError, setAiError] = useState("");
   const [dataItems, setDataItems] = useState<BridgeDataItem[]>(() => loadBridgeDataItems());
   const [editingItem, setEditingItem] = useState<BridgeDataItem | null>(null);
   const [shortcutActions, setShortcutActions] = useState<BridgeShortcutAction[]>(() => loadBridgeShortcutActions());
@@ -970,6 +981,36 @@ export function RealityBridgeApp({ onClose, onNotice, onOpenSettings }: {
     // 每次清空要重敲一遍（实测反馈）。示例存本机，下次打开也还在。
     setRuleTestResult(null);
   }, [characters]);
+
+  /**
+   * 用大白话生成规则草案。
+   *
+   * 刻意**不直接落库**：只把结果放进 aiDraft 展示，用户点「就用这个」才进编辑器。
+   * AI 理解偏差是常态（「八点」可能是早上也可能是晚上），直接存库的话用户
+   * 要等到点不生效才发现错了；进编辑器再保存，中间有一道人眼确认。
+   */
+  const runAiDraft = useCallback(async () => {
+    const text = aiPrompt.trim();
+    if (!text || aiDrafting) return;
+    setAiDrafting(true);
+    setAiError("");
+    setAiDraft(null);
+    try {
+      const draft = await draftRuleFromText(text);
+      if (!draft.rule) {
+        setAiError(draft.explanation);
+        if (draft.questions?.length) {
+          setAiError(`${draft.explanation}（${draft.questions.join("；")}）`);
+        }
+      } else {
+        setAiDraft(draft);
+      }
+    } catch (err) {
+      setAiError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setAiDrafting(false);
+    }
+  }, [aiPrompt, aiDrafting]);
 
   /**
    * 试跑当前编辑中的规则：真的执行一遍「加工 → 动作」。
@@ -2051,13 +2092,76 @@ export function RealityBridgeApp({ onClose, onNotice, onOpenSettings }: {
           <div className="rb-modal rb-editor" onClick={event => event.stopPropagation()}>
             <b className="rb-modal-title">{isExistingRule ? "编辑联动" : "新建联动"}</b>
 
+            {/* ── 用大白话创建 ──
+                放在场景模板**之前**：模板是「别人想好的几种情况」，而这里是
+                「你说什么它配什么」。用户脑子里的需求往往不落在那六张卡片里，
+                先给自由输入，比让他先去模板里找一个最接近的再改要顺。 */}
+            {flatRuleEditor && !isExistingRule ? (
+              <div className="rb-ai-block">
+                <div className="rb-ai-head">
+                  <span className="rb-icchip">{RB_ICON_SPARK}</span>
+                  <b>用大白话说，我帮你配</b>
+                </div>
+                <textarea
+                  className="rb-ai-input"
+                  rows={3}
+                  value={aiPrompt}
+                  placeholder={"比如：\n· 我想要每天早上八点收到一条指定角色的消息\n· 电量低于20%的时候让她关心我一句\n· 每天晚上十一点提醒我睡觉，周末不用"}
+                  onChange={event => setAiPrompt(event.target.value)}
+                  disabled={aiDrafting}
+                />
+                <div className="rb-ai-actions">
+                  <button
+                    type="button"
+                    className="rb-btn"
+                    disabled={aiDrafting || !aiPrompt.trim()}
+                    onClick={() => void runAiDraft()}
+                  >{aiDrafting ? "正在理解…" : "生成联动"}</button>
+                </div>
+                {aiError ? <p className="rb-hint" style={{ color: "#d9534f" }}>{aiError}</p> : null}
+                {aiDraft ? (
+                  <div className="rb-ai-result">
+                    <p className="rb-ai-explain">{aiDraft.explanation}</p>
+                    {aiDraft.questions?.length ? (
+                      <ul className="rb-ai-questions">
+                        {aiDraft.questions.map((q, i) => <li key={i}>{q}</li>)}
+                      </ul>
+                    ) : null}
+                    {aiDraft.rule ? (
+                      <>
+                        <div className="rb-ai-preview">
+                          <b>{aiDraft.rule.name}</b>
+                          <p>{summarize(aiDraft.rule)}</p>
+                        </div>
+                        <div className="rb-ai-actions">
+                          <button type="button" className="rb-btn ghost" onClick={() => setAiDraft(null)}>不要</button>
+                          <button
+                            type="button"
+                            className="rb-btn"
+                            onClick={() => {
+                              // 落到编辑器里而不是直接存库：让用户能改时间、换角色再保存。
+                              // AI 理解偏差时，这是唯一能当场纠正的机会。
+                              setEditing(aiDraft.rule);
+                              setAiDraft(null);
+                              setAiPrompt("");
+                            }}
+                          >就用这个，我再调调</button>
+                        </div>
+                      </>
+                    ) : null}
+                  </div>
+                ) : null}
+                <p className="rb-hint">也可以不理它，直接在下面自己配。</p>
+              </div>
+            ) : null}
+
             {/* 场景模板：只在新建时出现，按「我想让角色……」的说法排列。
                 点一下就把信号、加工、动作全部填好，用户只需微调时间或选角色。
                 编辑已有规则时不出现——那时候用户心里已经有明确目标了，
                 再摆一排模板只会碍事。 */}
             {flatRuleEditor && !isExistingRule ? (
               <div className="rb-fieldset" style={{ marginTop: 4 }}>
-                <p className="rb-wiz-tip">选一个最接近的，点开就是填好的规则，改改时间就能用：</p>
+                <p className="rb-wiz-tip">或者选一个最接近的，点开就是填好的规则，改改时间就能用：</p>
                 <div className="rb-signal-chips">
                   {RULE_SCENE_TEMPLATES.filter(tpl => !tpl.needsAndroid || platform.androidBridge === "ready").map(tpl => (
                     <button

@@ -897,6 +897,83 @@
 }
 /* 安静时段里的两列时间框不要左侧缩进——那块缩进是给动作子选项的 */
 .rb-quiet-block .rb-action-body { padding-left: 0; }
+
+/* ── 用大白话创建 ──
+   视觉上要明显比下面的场景模板更「重」：它是这一屏的主入口，
+   而模板是备选。用带一点主色的底和描边把它顶上来。 */
+.rb-ai-block {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 6px 0 10px;
+  padding: 12px;
+  border-radius: 13px;
+  border: 1px solid rgba(124, 92, 255, 0.28);
+  background: linear-gradient(180deg, rgba(124, 92, 255, 0.075), rgba(124, 92, 255, 0.03));
+}
+.rb-ai-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13.5px;
+}
+.rb-ai-head .rb-icchip { flex: none; }
+.rb-ai-input {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 9px 11px;
+  border-radius: 10px;
+  border: 1px solid rgba(120, 110, 150, 0.24);
+  background: rgba(255, 255, 255, 0.72);
+  font: inherit;
+  font-size: 13.5px;
+  line-height: 1.55;
+  resize: vertical;
+  min-height: 72px;
+}
+.rb-ai-input:focus {
+  outline: none;
+  border-color: var(--rb-accent, #7c5cff);
+}
+.rb-ai-input::placeholder { color: rgba(90, 84, 110, 0.5); }
+.rb-ai-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+}
+.rb-ai-result {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 11px;
+  border-radius: 11px;
+  border: 1px solid rgba(124, 92, 255, 0.22);
+  background: rgba(255, 255, 255, 0.66);
+}
+.rb-ai-explain {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.55;
+}
+.rb-ai-questions {
+  margin: 0;
+  padding-left: 18px;
+  font-size: 12.5px;
+  line-height: 1.6;
+  color: rgba(90, 84, 110, 0.85);
+}
+.rb-ai-preview {
+  padding: 8px 10px;
+  border-radius: 9px;
+  background: rgba(120, 110, 150, 0.07);
+}
+.rb-ai-preview b { font-size: 13px; }
+.rb-ai-preview p {
+  margin: 3px 0 0;
+  font-size: 12.5px;
+  line-height: 1.55;
+  color: rgba(90, 84, 110, 0.85);
+}
 .rb-del-link {
   border: none;
   background: none;
