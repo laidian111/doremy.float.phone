@@ -5,7 +5,6 @@ import { maybeAppendShortcutCapability, maybeAppendPerceptionStatus } from "./of
 import { maybeBuildStatusInjection } from "./perception/describe";
 import { loadCharacters } from "./character-storage";
 import { buildScreenEffectPromptHint } from "./chat-screen-effects";
-import { buildCompanionPromptContext } from "./companion-storage";
 import { emitChatPluginEvent, runChatPluginTransform } from "./chat-plugin-hooks";
 import { buildChatPluginPromptFragments } from "./chat-plugin-storage";
 import type { LlmRequestPayload } from "./chat-plugin-types";
@@ -358,6 +357,13 @@ type ChatPromptBuildOptions = {
     timedWakeElapsedMinutes?: number;
     timedWakeIntent?: string;
     periodCareContext?: string;
+    /**
+     * 手动传入的宠物上下文（{{companionContext}} 宏的内容）。
+     * 引擎**不再自动注入**宠物状态——用户明确反馈每次注入太费 token，
+     * 宠物信息走「一起养」工具按需获取。想自己接的用户（预设/世界书里
+     * 写 {{companionContext}}）可以从这里传。
+     */
+    companionContext?: string;
     appId?: string;
     appTags?: string[];
     attachedImages?: string[];
@@ -1946,7 +1952,11 @@ export async function buildChatPromptMessages(
         timedWakeElapsedMinutes: options?.timedWakeElapsedMinutes,
         timedWakeIntent: options?.timedWakeIntent,
         periodCareContext: options?.periodCareContext,
-        companionContext: buildCompanionPromptContext(character.id),
+        // 用户明确要求：不要每次注入宠物提示词，太费 token。
+        // 宠物信息改为随「一起养」工具的返回值按需流入——角色调工具时才看得到。
+        // {{companionContext}} 宏保留但默认传空（裁掉），用户想自己写
+        // 预设/世界书时仍可以用这个宏手动接上。
+        companionContext: options?.companionContext ?? "",
         scheduleSummary,
         currentSchedule,
         coreMemories,

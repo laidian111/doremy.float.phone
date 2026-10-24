@@ -25,7 +25,7 @@ import { executeCustomAppToolCall } from "./custom-app-tool-runtime";
 import { characterWorkspace, agentComputerRequest, isAgentComputerConfigured } from "./agent-computer";
 import { AGENT_COMPUTER_CAPABILITY_ID, CHECK_IN_REQUEST_CAPABILITY_ID, CALENDAR_MANAGEMENT_CAPABILITY_ID, COMPANION_CAPABILITY_ID, DEVICE_ACTION_CAPABILITY_ID, GENERATE_FILE_CAPABILITY_ID, SHARE_CONTENT_CAPABILITY_ID, LOCAL_DATA_LIBRARY_CAPABILITY_ID, MEMORY_WRITE_CAPABILITY_ID, MUSIC_CONTROL_CAPABILITY_ID, NOTE_WALL_CAPABILITY_ID, PERCEPTION_READ_CAPABILITY_ID, PHONE_WIDGET_CAPABILITY_ID, REALITY_BRIDGE_CAPABILITY_ID, SEND_FILE_CAPABILITY_ID, SYSTEM_CALENDAR_CAPABILITY_ID, TIMED_WAKE_CAPABILITY_ID, TOOLBOX_MANAGEMENT_CAPABILITY_ID, getInternalCapability } from "./internal-capability-storage";
 import { COMPANION_ACTIONS, COMPANION_STAT_META, type CompanionActionId, type CompanionOwner } from "./companion-types";
-import { companionOwnerKey, findCompanion, formatCompanionForPrompt, getCompanionSettled, loadCompanionConfig, performCompanionAction } from "./companion-storage";
+import { companionOwnerKey, findCompanion, formatCompanionForPrompt, getCompanionSettled, loadCompanionConfig, performCompanionAction, tryAutoCare } from "./companion-storage";
 import {
     checkQueryCooldown,
     describeStatusByFocus,
@@ -2912,15 +2912,26 @@ async function executeCompanionTool(call: ToolCall, context?: ToolExecutionConte
     const actionRaw = typeof args.action === "string" ? args.action.trim().toLowerCase() : "status";
     const note = typeof args.note === "string" ? args.note.trim() : "";
 
-    // 状态查询：只读，不消耗冷却
+    // 状态查询：只读，不消耗冷却。
+    // 顺带跑一次「角色自动照顾」判定——她来看宠物，该出手就出手。
+    // （之前挂在系统提示词注入里，但用户明确反馈不要每次注入浪费 token；
+    // 挂在工具调用里正好：她关心宠物的时候才是照顾的合理时机，
+    // 照顾结果作为工具返回值的一部分，叙事有事实依据。）
     if (actionRaw === "status" || actionRaw === "") {
         const settled = getCompanionSettled(owner) || findCompanion(owner)!;
+        const care = tryAutoCare(settled, owner);
+        let careNote = "";
+        if (care) {
+            const refreshed = getCompanionSettled(owner) || settled;
+            const actionLabel = COMPANION_ACTIONS.find(a => a.id === care.actionId)?.label || "照顾";
+            careNote = `\n（你顺手${actionLabel}了它——距离上次照顾已经有一段时间了）\n${formatCompanionForPrompt(refreshed)}`;
+        }
         return {
             name: call.name,
             success: true,
             continueConversation: true,
             persistToHistory: false,
-            data: formatCompanionForPrompt(settled) + (note ? `\n（你说：${note}）` : ""),
+            data: formatCompanionForPrompt(settled) + careNote + (note ? `\n（你说：${note}）` : ""),
         };
     }
 
