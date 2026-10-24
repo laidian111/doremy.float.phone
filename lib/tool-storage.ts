@@ -640,11 +640,19 @@ const BUILTIN_REST_TOOLS: RestToolConfig[] = [
 
 function mergeBuiltinRestTool(existing: RestToolConfig | undefined, builtin: RestToolConfig): RestToolConfig {
     if (!existing) return builtin;
+    // 注意展开顺序：builtin 在前、existing 在后，看似会让旧数据覆盖新定义——
+    // 对 enabled 这类用户偏好这是对的（用户关了就该保持关）。
+    // 但 endpoint/method/parameterSchema 是**代码定义的行为**：如果让旧存量
+    // 覆盖它们，builtin 的修复（比如换掉失效的 Jina endpoint）永远到不了
+    // 已有设备上——用户会一直用坏的工具，且没有任何报错。所以这三个字段
+    // 强制以代码为准。
     return {
-        ...builtin,
         ...existing,
+        ...builtin,
         id: builtin.id,
         builtIn: true,
+        // 用户偏好类字段保留用户的选择
+        enabled: existing.enabled,
         createdBy: existing.createdBy || builtin.createdBy,
         createdAt: existing.createdAt ?? builtin.createdAt,
         updatedAt: existing.updatedAt ?? builtin.updatedAt,

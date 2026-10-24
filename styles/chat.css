@@ -2456,16 +2456,17 @@
 }
 
 /* ── 网页链接分享卡片 ──
-   与小红书卡片的区别：那个强调封面和话题标签，这个强调「哪个站、点了能跳」。
-   做成横向信息卡，跟微信/Telegram 的链接预览一个思路——用户扫一眼就知道
-   这是什么站、值不值得点。 */
+   对标小红书卡片的视觉质量。第一版最大的败笔是大量用 opacity 压文字
+   （0.42~0.66），在浅色背景上直接糊成一片——用户实拍截图「太丑了」。
+   这版的原则：正文一律实色，层级靠字重和字号区分，彩色只做点缀。 */
 .chat-weblink-card {
   width: 236px;
-  padding: 10px 12px;
-  border-radius: 8px;
+  overflow: hidden;
+  border-radius: 10px;
   background: #ffffff;
-  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.02);
-  color: var(--c-music-text, #2d3b36);
+  border: 1px solid rgba(0, 0, 0, 0.05);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.04);
+  color: #303133;
   transition: opacity 0.15s ease;
 }
 
@@ -2473,28 +2474,38 @@
   opacity: 0.72;
 }
 
+/* 顶部站点条：彩色圆点 + 站点名，一眼看出是哪个网站 */
 .chat-weblink-head {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  margin-bottom: 5px;
-  opacity: 0.55;
-}
-
-.chat-weblink-site {
+  gap: 6px;
+  padding: 9px 11px 0;
+  color: #909399;
   font-size: calc(9.9px * var(--app-text-scale, 1));
   font-weight: 600;
   letter-spacing: 0.02em;
+}
+
+.chat-weblink-dot {
+  width: 8px;
+  height: 8px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  background: linear-gradient(135deg, #5b8def, #7c5bef);
+}
+
+.chat-weblink-site {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
 .chat-weblink-title {
-  font-size: calc(12.6px * var(--app-text-scale, 1));
+  padding: 6px 11px 0;
+  font-size: calc(13.1px * var(--app-text-scale, 1));
   font-weight: 600;
-  line-height: 1.4;
+  line-height: 1.42;
+  color: #303133;
   /* 最多两行：链接标题经常很长，全显示会把气泡撑得很难看 */
   display: -webkit-box;
   -webkit-line-clamp: 2;
@@ -2504,10 +2515,10 @@
 }
 
 .chat-weblink-desc {
-  margin-top: 4px;
+  padding: 4px 11px 0;
   font-size: calc(10.8px * var(--app-text-scale, 1));
-  line-height: 1.45;
-  opacity: 0.66;
+  line-height: 1.5;
+  color: #606266;
   display: -webkit-box;
   -webkit-line-clamp: 2;
   line-clamp: 2;
@@ -2515,15 +2526,31 @@
   overflow: hidden;
 }
 
+/* 底部：可点击链接行。淡色但实色可读，配「打开」箭头暗示可点 */
 .chat-weblink-url {
-  margin-top: 6px;
-  padding-top: 6px;
+  margin-top: 8px;
+  padding: 7px 11px;
   border-top: 1px solid rgba(0, 0, 0, 0.05);
-  font-size: calc(9.5px * var(--app-text-scale, 1));
-  opacity: 0.42;
+  background: rgba(91, 141, 239, 0.05);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: #5b8def;
+  font-size: calc(9.9px * var(--app-text-scale, 1));
+}
+
+.chat-weblink-url-text {
+  flex: 1;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  font-weight: 600;
+}
+
+/* 用户发的卡片（自己气泡一侧）不需要外框阴影——气泡本身已经带底色 */
+.bubble-user .chat-weblink-card {
+  border-color: rgba(255, 255, 255, 0.35);
 }
 
 .chat-xhs-share-card {

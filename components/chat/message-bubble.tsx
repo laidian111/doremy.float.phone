@@ -2347,8 +2347,9 @@ function XiaohongshuShareBubble({ msg }: { msg: ChatMessage }) {
  * 网页链接分享卡片。
  *
  * 与小红书卡片的区别：那个是「帖子」，有封面和话题标签；这个是「链接」，
- * 重点是可点开的 URL 和站点来源。所以样式上做成横向的链接卡，
- * 点击整卡直接跳浏览器——用户分享过来就是想让对方（或自己）点开看。
+ * 重点是可点开的 URL 和站点来源。视觉上对标小红书卡片的工艺
+ * （实色文字、层级靠字重字号、彩色只做点缀）——第一版用 opacity 压文字，
+ * 浅色背景上直接糊成一片，用户实拍「太丑了」。
  */
 function WebLinkShareBubble({ msg }: { msg: ChatMessage }) {
     const data = msg.mediaData;
@@ -2371,18 +2372,21 @@ function WebLinkShareBubble({ msg }: { msg: ChatMessage }) {
             style={url ? { cursor: "pointer" } : undefined}
         >
             <div className="chat-weblink-head">
+                <span className="chat-weblink-dot" aria-hidden="true" />
                 <span className="chat-weblink-site">{siteName}</span>
-                {url ? (
-                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+            </div>
+            <div className="chat-weblink-title">{title}</div>
+            {description ? <div className="chat-weblink-desc">{description}</div> : null}
+            {url ? (
+                <div className="chat-weblink-url">
+                    <span className="chat-weblink-url-text">{url.replace(/^https?:\/\//, "")}</span>
+                    <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" style={{ flex: "0 0 auto" }}>
                         <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
                         <polyline points="15 3 21 3 21 9" />
                         <line x1="10" y1="14" x2="21" y2="3" />
                     </svg>
-                ) : null}
-            </div>
-            <div className="chat-weblink-title">{title}</div>
-            {description ? <div className="chat-weblink-desc">{description}</div> : null}
-            {url ? <div className="chat-weblink-url">{url.replace(/^https?:\/\//, "").slice(0, 60)}</div> : null}
+                </div>
+            ) : null}
         </div>
     );
 }
