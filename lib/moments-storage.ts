@@ -354,6 +354,15 @@ export type MomentsInteractionConfig = {
     bilingualTranslationPrompt: string;
     // 禁止自动发帖的角色（只关调度发帖；评论/点赞/手动立即发帖不受影响）
     autoPostDisabledCharacterIds: string[];
+    /**
+     * 后台互动总开关。
+     *
+     * 关掉后：网页不再注册原生心跳、也不发「有互动在等你」的通知。
+     * 互动仍然会在你**打开 App 时**补跑，只是不会在后台提醒你。
+     *
+     * 默认开：用户装这个 App 就是想要角色有反应，默认关掉等于功能没生效。
+     */
+    backgroundReactionsEnabled: boolean;
 };
 
 export const DEFAULT_MOMENTS_CONFIG: MomentsInteractionConfig = {
@@ -369,6 +378,7 @@ export const DEFAULT_MOMENTS_CONFIG: MomentsInteractionConfig = {
     collapseBilingualTranslation: true,
     bilingualTranslationPrompt: DEFAULT_MOMENTS_BILINGUAL_PROMPT,
     autoPostDisabledCharacterIds: [],
+    backgroundReactionsEnabled: true,
 };
 
 export function loadMomentsConfig(): MomentsInteractionConfig {

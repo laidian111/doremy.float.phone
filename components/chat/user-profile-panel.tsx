@@ -25,6 +25,7 @@ import { ChatPluginPageBoundary } from "./chat-plugin-page-boundary";
 import { GlobalChatInfoSettings } from "./global-chat-info-settings";
 import { WalletPanel } from "./wallet-panel";
 import { loadMomentsConfig, saveMomentsConfig, DEFAULT_MOMENTS_CONFIG, type MomentsInteractionConfig, getAllPosts } from "@/lib/moments-storage";
+import { applyMomentsBackgroundSetting } from "@/lib/moments-engine";
 import { loadChatContacts } from "@/lib/chat-storage";
 import { loadCharacters } from "@/lib/character-storage";
 import { triggerImmediatePost } from "@/lib/moments-engine";
@@ -922,6 +923,11 @@ function InlineMomentsSettings({ onBack }: { onBack: () => void }) {
         const next = { ...config, ...patch };
         setConfig(next);
         saveMomentsConfig(next);
+        // 后台互动开关要立刻生效：只存配置不重排任务的话，
+        // 用户关掉开关后原生心跳还在跑，仍然会收到通知
+        if ("backgroundReactionsEnabled" in patch) {
+            applyMomentsBackgroundSetting(next.backgroundReactionsEnabled !== false);
+        }
     };
 
     // 自动发帖角色开关：只拦调度发帖；评论/点赞/手动立即发帖不受影响
@@ -1024,11 +1030,26 @@ function InlineMomentsSettings({ onBack }: { onBack: () => void }) {
                 </div>
 
                 <div className="menu-group">
+                    <div className="menu-item">
+                        <ProfileSettingsIcon icon={Bell} color={CONTENT_APP_ACCENTS.moments} />
+                        <div className="menu-label-group">
+                            <span className="menu-label">后台互动</span>
+                            <span className="menu-desc">退出 App 后角色仍会回你的动态，有互动时通知你</span>
+                        </div>
+                        <div className="menu-right">
+                            <Toggle
+                                checked={config.backgroundReactionsEnabled !== false}
+                                onChange={checked => update({ backgroundReactionsEnabled: checked })}
+                            />
+                        </div>
+                    </div>
+                </div>
+
+                <div className="menu-group">
                     <ProfileSettingsSliderItem
                         icon={MessageSquare}
                         color={BINDING_ACCENTS.api}
-                        label="评论概率"
-                        desc="角色看到动态后发表评论的概率"
+                        label="评论概率"                        desc="角色看到动态后发表评论的概率"
                         value={Math.round(config.commentProb * 100)}
                         valueLabel={`${Math.round(config.commentProb * 100)}%`}
                         min={0}

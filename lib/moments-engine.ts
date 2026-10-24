@@ -85,6 +85,28 @@ export function startMomentsService() {
     startVisibilityCatchUp();
     // 把「什么时候该看一眼」交给系统：网页定时器进后台会停，
     // 原生 WorkManager 不会。没壳时这个调用静默失败，退回纯网页调度。
+    // 开关关掉就撤销队列——不留一个偷偷跑的后台任务。
+    if (isBackgroundReactionsEnabled()) {
+        syncMomentsBackground(true);
+        publishPendingToShell();
+    } else {
+        syncMomentsBackground(false);
+    }
+}
+
+/**
+ * 用户在设置里切换「后台互动」时立刻生效。
+ *
+ * 只存配置是不够的：原生心跳一旦注册就在跑，关掉开关不撤销的话，
+ * 用户会继续收到「有互动在等你」——明明已经关了，最招人烦。
+ */
+export function applyMomentsBackgroundSetting(enabled: boolean): void {
+    if (!enabled) {
+        syncMomentsBackground(false);
+        // 关掉时把已弹出的通知也清掉，别留一条点开发现没事干的
+        clearMomentsPendingNotice();
+        return;
+    }
     syncMomentsBackground(true);
     publishPendingToShell();
 }
@@ -128,12 +150,29 @@ function startVisibilityCatchUp() {
 }
 
 /**
+ * 后台互动是否开启（用户在朋友圈设置里控制）。
+ *
+ * 关掉只是不发后台提醒 + 撤销原生心跳；互动本身仍会在用户
+ * 打开 App 时补跑——不能因为关了提醒就连该做的互动都不做了。
+ */
+function isBackgroundReactionsEnabled(): boolean {
+    try {
+        return loadMomentsConfig().backgroundReactionsEnabled !== false;
+    } catch {
+        return true;
+    }
+}
+
+/**
  * 把当前待办摘要推给原生调度器。
  *
  * 原生每 15 分钟醒一次，看这里给出的 earliestDueAt 决定要不要提醒用户。
  * 没壳（纯网页环境）时静默跳过——网页定时器仍然能跑，只是进后台不保证。
  */
 function publishPendingToShell() {
+    // 关掉后台互动时不要往原生塞待办：那边会照发通知，
+    // 用户明明关了提醒却还收到，是最招人烦的那类 bug
+    if (!isBackgroundReactionsEnabled()) return;
     try {
         const tasks = loadPendingReactions();
         publishMomentsPending(tasks.map(t => t.fireAt));
