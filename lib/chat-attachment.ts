@@ -160,10 +160,52 @@ function clampExtract(text: string, kind: string): AttachmentExtract {
 
 async function extractPlainText(blob: Blob, kind: string): Promise<AttachmentExtract> {
     try {
-        const text = await blob.text();
+        const bytes = new Uint8Array(await blob.arrayBuffer());
+
+        let text: string;
+
+        // ── 先看 BOM，它能一锤定音 ──
+        // BOM 顺序不能乱：FF FE 是 UTF-16LE，FE FF 是 UTF-16BE，
+        // 而 UTF-8 的 BOM 是 EF BB BF。先判 BOM 再猜编码，比纯猜可靠得多。
+        if (bytes.length >= 3 && bytes[0] === 0xef && bytes[1] === 0xbb && bytes[2] === 0xbf) {
+            text = new TextDecoder("utf-8").decode(bytes.subarray(3));
+        } else if (bytes.length >= 2 && bytes[0] === 0xff && bytes[1] === 0xfe) {
+            text = new TextDecoder("utf-16le").decode(bytes.subarray(2));
+        } else if (bytes.length >= 2 && bytes[0] === 0xfe && bytes[1] === 0xff) {
+            text = new TextDecoder("utf-16be").decode(bytes.subarray(2));
+        } else {
+            // ── 没有 BOM，靠「UTF-8 严格解码能不能过」来判断 ──
+            // 为什么必须做这一步：Windows 上大量 .txt 是 GBK 编码，
+            // 直接 blob.text() 会把「你好」解成「���」，模型拿到的是一堆
+            // 替换字符，等于什么都没读到——而且不会报任何错，最难排查那种。
+            try {
+                text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+            } catch {
+                // UTF-8 解不了 → 按 GBK 试（覆盖简体中文 Windows 的常见情况）
+                try {
+                    text = new TextDecoder("gbk").decode(bytes);
+                } catch {
+                    // 浏览器不支持 gbk 标签时退回宽松 UTF-8（至少不抛异常）
+                    text = new TextDecoder("utf-8").decode(bytes);
+                }
+            }
+        }
+
         if (!text.trim()) {
             return { ok: false, error: "文件是空的", kind };
         }
+
+        // 兜底：解出来大半是替换字符，说明编码还是没猜对。
+        // 与其把乱码喂给模型（它会基于乱码瞎编），不如直说读不了。
+        const replacementCount = (text.match(/\uFFFD/g) || []).length;
+        if (replacementCount > 20 && replacementCount / text.length > 0.1) {
+            return {
+                ok: false,
+                error: "文件编码无法识别（内容读出来是乱码），可以另存为 UTF-8 再发",
+                kind,
+            };
+        }
+
         return clampExtract(text, kind);
     } catch (err) {
         return { ok: false, error: `读取失败：${err instanceof Error ? err.message : String(err)}`, kind };

@@ -1199,6 +1199,23 @@ export function formatRichMediaForHistory(msg: ChatMessage, userName: string, ch
             if (d?.fileType === "image" && isImageGenerationMediaMessage(msg)) {
                 return formatImageGenerationDirective(msg);
             }
+            // 用户自己发的文档：把解析出的正文附进来，角色才能真正读到内容。
+            //
+            // 这里原先直接 `return msg.content`，而 content 只有文件名——
+            // 于是角色只能看到「《月影归途》.txt」三个字，会说「我这边没收到文件」。
+            // 「把作业发给角色批改」靠的就是这一段。
+            if (d?.attachmentText) {
+                const label = d?.fileName || msg.content || "文件";
+                const tail = d?.attachmentTruncated
+                    ? "\n[注意：文件较长，以上只是前面一部分，不是全文。不要声称已读完全部内容。]"
+                    : `\n[文件结束：${label}]`;
+                return `[用户发来文件：${label}]\n${d.attachmentText}${tail}`;
+            }
+            // 用户发来但读不出内容的文件（PDF 等）：说明「收到了」，同时让模型
+            // 知道自己看不到正文，别硬编造里面写了什么。
+            if (msg.role === "user" && d?.fileName) {
+                return `[用户发来文件：${d.fileName}（这个格式的内容我看不到，只能看到文件名）]`;
+            }
             return msg.content;
         case "audio":
             return `[语音条:${d?.label ?? "语音消息"}]`;
