@@ -192,8 +192,27 @@ export async function POST(req: NextRequest) {
                 return targetUrl;
             }
         })();
+
+        // 把底层 cause 也带出来。Node/undici 的顶层消息经常只有一句
+        // 「fetch failed」，真正的原因（DNS 解析失败、TLS 握手失败、
+        // 代理连不上）藏在 cause 里。不展开就只能靠猜。
+        const cause = (error as { cause?: unknown })?.cause;
+        const causeText = cause instanceof Error
+            ? cause.message
+            : cause ? String(cause) : "";
+        const causeCode = (cause as { code?: string } | undefined)?.code;
+
+        // 明确点名「可能是代理」：本地开发时 HTTP(S)_PROXY 一旦指向一个挂掉的
+        // 代理，服务端所有出站请求都会失败，而错误信息里完全看不出这一点。
+        const proxyHint = (() => {
+            const proxy = process.env.https_proxy || process.env.HTTPS_PROXY
+                || process.env.http_proxy || process.env.HTTP_PROXY;
+            return proxy ? `（当前服务端配置了代理 ${proxy}，若代理不可用会导致此错误）` : "";
+        })();
+
+        const detail = [causeText, causeCode].filter(Boolean).join(" / ");
         return NextResponse.json(
-            { error: `转发到 ${host} 失败：${message}` },
+            { error: `转发到 ${host} 失败：${message}${detail ? `（${detail}）` : ""}${proxyHint}` },
             { status: 502 },
         );
     }
