@@ -100,3 +100,34 @@ export function formatWebLinkForPrompt(input: {
     if (url) parts.push(`链接：${url}`);
     return parts.join("，");
 }
+
+/**
+ * 判断一条消息内容是不是「纯链接」——整条消息只有一个 URL（允许前后空白）。
+ *
+ * 为什么要这个判断：用户从浏览器复制链接直接粘到输入框发送，是最自然的
+ * 操作习惯。如果这时仍然发成普通文字气泡，用户会觉得「怎么不是卡片」。
+ *
+ * 严格限定「整条只有一个链接」：如果消息里还有别的话
+ * （比如「你看这个 https://... 挺有意思」），那就该是普通文字消息——
+ * 那种情况硬转成卡片会把用户写的话吞掉。
+ */
+export function parseBareLinkMessage(text: string): { url: string } | null {
+    const trimmed = text.trim();
+    if (!trimmed) return null;
+    // 整条消息必须就是一个 URL，不接受多余文字
+    const match = trimmed.match(/^(https?:\/\/[^\s]+)$/i);
+    if (!match) return null;
+    const url = match[1];
+    try {
+        const parsed = new URL(url);
+        // 只有域名没有路径也算（比如 https://example.com）——那是有效分享
+        return parsed.protocol === "http:" || parsed.protocol === "https:"
+            ? { url }
+            : null;
+    } catch {
+        return null;
+    }
+}
+
+/** 从消息文本里抽出任意链接时用的正则（供未来扩展）。 */
+export const ANY_URL_PATTERN = /https?:\/\/[^\s<>"']+/gi;

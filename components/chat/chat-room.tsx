@@ -6,7 +6,7 @@ import { cleanStreamText, splitStreamPreviewSegments, stripLiteralTexts, stripXm
 import type { StateValue } from "@/lib/chat-storage";
 import { storeMediaBlob } from "@/lib/media-cache-storage";
 import { detectFileKind, extractAttachmentText, isExtractableKind } from "@/lib/chat-attachment";
-import { formatWebLinkForPrompt, guessSiteName } from "@/lib/chat-share";
+import { formatWebLinkForPrompt, guessSiteName, parseBareLinkMessage } from "@/lib/chat-share";
 import { parseStateValues, mergeStateValues } from "@/lib/state-value-parser";
 import { parseAIResponse, type ParsedMessagePart } from "@/lib/rich-message-parser";
 import { isKnownStickerLabel } from "@/lib/sticker-data";
@@ -4149,6 +4149,29 @@ export function ChatRoom({ session, onBack, onDeleted }: ChatRoomProps) {
             // 点数由系统旁白公布——避免结果挂在 user 消息上被角色模仿格式
             const diceOnly = !isQuoting && isDiceOnlyMessage(currentText);
             const diceFace = diceOnly ? rollChatDiceFace() : 0;
+
+            // 整条消息就是一个链接 → 发成链接卡片，而不是普通文字。
+            // 从浏览器复制链接直接粘贴发送是最自然的操作，这种情况下
+            // 用户预期看到的是卡片。引用/骰子场景不转换（那些有明确语义）。
+            const bareLink = !isQuoting && !diceOnly ? parseBareLinkMessage(currentText) : null;
+            if (bareLink) {
+                const siteName = guessSiteName(bareLink.url);
+                const linkMsg = pushChatMessage({
+                    sessionId: session.id,
+                    role: "user",
+                    content: formatWebLinkForPrompt({ url: bareLink.url, title: siteName, siteName }),
+                    mediaType: "web_link_share",
+                    mediaData: {
+                        webLinkUrl: bareLink.url,
+                        webLinkTitle: siteName,
+                        webLinkSiteName: siteName,
+                    },
+                });
+                setMessages(prev => [...prev, linkMsg]);
+                setPendingGenerate(true);
+                if (options?.autoReply) void triggerAIResponse();
+                return;
+            }
 
             const newMsg = pushChatMessage({
                 sessionId: session.id,

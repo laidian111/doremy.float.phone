@@ -571,8 +571,11 @@ export function findEnabledToolForSchema(name: string, appId?: string, macroCont
 const BUILTIN_WEB_READER: RestToolConfig = {
     id: "builtin_web_reader",
     name: "查看网页",
-    description: "使用 Jina Reader 读取网页 URL 并返回正文",
-    endpoint: "https://r.jina.ai/{{{url}}}",
+    description: "读取网页 URL 并返回正文内容",
+    // 走项目自己的 /api/web-reader：先直连抓取并抽取正文，失败才回退 Jina。
+    // 原先直接指向 https://r.jina.ai，实测大陆网络下直连超时、走代理返回 451，
+    // 工具完全不可用——角色会反复报「打不开」，然后开始编造网页内容。
+    endpoint: "/api/web-reader?url={{{url}}}",
     method: "GET",
     parameterSchema: JSON.stringify({
         type: "object",
@@ -581,7 +584,7 @@ const BUILTIN_WEB_READER: RestToolConfig = {
         },
         required: ["url"],
     }),
-    directFetch: false,
+    directFetch: true,
     enabled: true,
     builtIn: true,
     createdBy: "ai",
