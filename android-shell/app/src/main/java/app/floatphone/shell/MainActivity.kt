@@ -62,7 +62,7 @@ class MainActivity : AppCompatActivity() {
          * 壳能力、决定哪些原生功能可用。它和 versionName 一旦分叉，就会出现
          * 「安装的是 1.0.13，网页却以为在 1.0.10 上」这种最难查的错位。
          */
-        const val VERSION = "1.0.13"
+        const val VERSION = "1.0.14"
         /** 来电接听等场景的站内深链（必须以 SITE_URL 开头，否则忽略） */
         const val EXTRA_OPEN_URL = "open_url"
         /** 外部 App（如桌宠）唤起本壳用的自定义 scheme：floatshell://open?url=<站内地址> */
@@ -596,6 +596,40 @@ class MainActivity : AppCompatActivity() {
     inner class ShellBridge {
         @JavascriptInterface
         fun getVersion(): String = VERSION
+
+        // ── 后台调度（朋友圈/聊天互动的系统级心跳）─────────────
+        //
+        // 为什么网页要调这几个方法：网页的定时器活在 WebView 进程里，
+        // 进程被冻结/回收时定时器一起停，积压的互动任务不兑现——
+        // 用户看到的就是「退出后台就没人回」。注册 WorkManager 之后
+        // 调度由系统负责，App 被杀也还在队列里。
+
+        /**
+         * 开启/关闭后台心跳。幂等，重复调用不会叠加任务。
+         * 关掉会撤销已排队的任务，不留偷偷跑的后台活。
+         */
+        @JavascriptInterface
+        fun setMomentsBackgroundEnabled(enabled: Boolean): Boolean =
+            MomentsScheduler.sync(this@MainActivity, enabled)
+
+        /**
+         * 推送待办摘要（有多少条、最早什么时候到期）。
+         * 只传元信息，不传聊天内容——后台任务不需要知道角色要说什么。
+         */
+        @JavascriptInterface
+        fun setMomentsPending(json: String): Boolean =
+            MomentsScheduler.setPending(this@MainActivity, json)
+
+        /** 后台调度状态快照，给诊断面板读。 */
+        @JavascriptInterface
+        fun getMomentsSchedulerState(): String =
+            MomentsScheduler.diagnosticsJson(this@MainActivity)
+
+        /** 用户回到前台并补跑完之后，清掉待办通知。 */
+        @JavascriptInterface
+        fun clearMomentsPendingNotice() {
+            ShellNotifier.clearMomentsPending(this@MainActivity)
+        }
 
         /** 实测系统状态栏高度（CSS px）。页面侧兜底轮询用；主要注入路径见 injectStatusBarHeight。 */
         @JavascriptInterface

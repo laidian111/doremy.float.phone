@@ -40,8 +40,8 @@ android {
         // 1.0.12：截屏可选收件人；位置感知；睡眠（Health Connect）。
         // 1.0.13：versionCode 与 versionName 对齐；启用本仓库自管的签名密钥。
         //         改 applicationId 为 .pro 后缀，与上游版本并存不冲突。
-        versionCode 13
-        versionName "1.0.13"
+        versionCode 14
+        versionName "1.0.14"
         buildConfigField "String", "SITE_URL", "\"${siteUrl}\""
     }
 
@@ -96,4 +96,8 @@ dependencies {
     // Health Connect 的读取 API 是挂起函数，而桥要让网页同步读，所以用协程
     // 在后台取、取完写进缓存。显式声明而不是靠传递依赖，避免版本变动就编译失败。
     implementation 'org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3'
+    // WorkManager：朋友圈/聊天互动的系统级后台调度。
+    // 网页侧的 Web Worker 定时器能被标签页节流绕过，但绕不开进程冻结/
+    // 回收——那正是「退出后台就没人回」的根因，只能交给系统调度。
+    implementation 'androidx.work:work-runtime-ktx:2.9.1'
 }

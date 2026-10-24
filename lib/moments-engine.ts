@@ -5,6 +5,7 @@
 // ensuring full character settings, world books, long-term memory, and user persona.
 
 import { loadCharacters } from "./character-storage";
+import { clearMomentsPendingNotice, publishMomentsPending, syncMomentsBackground } from "./moments-background-sync";
 import { loadChatContacts } from "./chat-storage";
 import type { Character } from "./character-types";
 import {
@@ -82,11 +83,16 @@ export function startMomentsService() {
     staggerOverduePosts();
     startReactionPoll(); // unified poll handles both reactions AND scheduled posts
     startVisibilityCatchUp();
+    // 把「什么时候该看一眼」交给系统：网页定时器进后台会停，
+    // 原生 WorkManager 不会。没壳时这个调用静默失败，退回纯网页调度。
+    syncMomentsBackground(true);
+    publishPendingToShell();
 }
 
 export function stopMomentsService() {
     stopReactionPoll();
     stopVisibilityCatchUp();
+    syncMomentsBackground(false);
     started = false;
 }
 
@@ -109,6 +115,9 @@ function startVisibilityCatchUp() {
         // 立刻跑一次，不等下一个轮询周期
         try {
             pollPendingReactions();
+            // 补跑完就没必要再挂着「有互动在等你」的通知了
+            clearMomentsPendingNotice();
+            publishPendingToShell();
         } catch (err) {
             console.warn("[Moments] catch-up poll failed:", err);
         }
@@ -116,6 +125,21 @@ function startVisibilityCatchUp() {
     document.addEventListener("visibilitychange", visibilityHandler);
     // 从后台被系统恢复时（WebView 常见）也会触发 pageshow
     window.addEventListener("pageshow", visibilityHandler);
+}
+
+/**
+ * 把当前待办摘要推给原生调度器。
+ *
+ * 原生每 15 分钟醒一次，看这里给出的 earliestDueAt 决定要不要提醒用户。
+ * 没壳（纯网页环境）时静默跳过——网页定时器仍然能跑，只是进后台不保证。
+ */
+function publishPendingToShell() {
+    try {
+        const tasks = loadPendingReactions();
+        publishMomentsPending(tasks.map(t => t.fireAt));
+    } catch {
+        // 推给原生失败不该影响网页侧调度
+    }
 }
 
 function stopVisibilityCatchUp() {
@@ -424,6 +448,8 @@ async function triggerAIPost(characterId: string): Promise<void> {
 /** Called when user publishes a post — trigger AI reactions. */
 export function onUserPost(post: MomentPost): void {
     triggerAIReactionsForPost(post, "user");
+    // 新动态 = 新待办，立刻同步给原生闹钟，别等下一次网页轮询
+    publishPendingToShell();
 }
 
 /**
@@ -434,19 +460,34 @@ export function onUserPost(post: MomentPost): void {
  * 「我发了动态，没人理」。这个函数让用户能主动催一次，
  * 不用等（也不用懂）后台调度。
  *
+ * 两个关键点（第一版都漏了，用户实测「点了没反应」）：
+ *   1. 用 urgent 模式安排任务：立刻执行 + 至少一个角色回应。
+ *      默认调度是 120 秒后首评 + 50% 概率，点了按钮等两分钟
+ *      还可能一个都不来，等于没反应。
+ *   2. 安排完立刻 poll 一次，不等下一个 30 秒周期。
+ *
  * 会把这条动态上**尚未兑现**的旧任务先清掉，避免补催之后
  * 又来一轮重复评论。
+ *
+ * 返回是否真的安排了互动，供 UI 提示用户。
  */
-export function triggerReactionsNow(postId: string): void {
+export function triggerReactionsNow(postId: string): boolean {
     const posts = loadMomentPosts();
     const post = posts.find(p => p.id === postId);
-    if (!post) return;
+    if (!post) return false;
 
     // 清掉这条动态积压的旧任务，防止补催后重复互动
     const stale = loadPendingReactions().filter(t => t.postId === postId);
     for (const t of stale) removePendingReaction(t.id);
 
-    triggerAIReactionsForPost(post, post.authorType === "user" ? "user" : "character");
+    triggerAIReactionsForPost(post, post.authorType === "user" ? "user" : "character", true);
+
+    // 安排完立刻跑一次，不等下一个轮询周期
+    const scheduled = loadPendingReactions().filter(t => t.postId === postId);
+    if (scheduled.length === 0) return false;
+    publishPendingToShell();
+    pollPendingReactions();
+    return true;
 }
 
 // ── NPC Reactions (for character posts) ──
@@ -764,7 +805,14 @@ async function generateNPCReactionsViaLLM(
 
 // ── AI Reactions (for user posts) ──
 
-function triggerAIReactionsForPost(post: MomentPost, excludeAuthorId: string): void {
+/**
+ * 安排角色对某条动态的互动。
+ *
+ * urgent=true 时走「手动催」路径：立刻执行、且保证至少有一个角色回应。
+ * 默认路径是自动调度，故意留了较长延迟和概率，避免刷屏；
+ * 但用户主动点按钮时还等两分钟、还可能一个都不来，那就是「点了没反应」。
+ */
+function triggerAIReactionsForPost(post: MomentPost, excludeAuthorId: string, urgent = false): void {
     const chars = loadCharacters();
     const contacts = loadChatContacts();
 
@@ -776,18 +824,27 @@ function triggerAIReactionsForPost(post: MomentPost, excludeAuthorId: string): v
         }))
         .filter(c => c.char) as { contact: typeof contacts[0]; char: Character }[];
 
-    // Collect who will comment
+    if (visibleChars.length === 0) return;
+
     const cfg = loadMomentsConfig();
     const commenters: Character[] = [];
-    for (const { char } of visibleChars) {
-        if (Math.random() < cfg.commentProb) {
-            commenters.push(char);
+    if (urgent) {
+        // 手动催：至少一个角色一定回应。概率筛选在这里只会让用户
+        // 点了按钮却什么都没发生，所以取「概率决定数量」的下限 1。
+        const byChance = visibleChars.filter(() => Math.random() < cfg.commentProb).map(v => v.char);
+        commenters.push(...(byChance.length > 0 ? byChance : [visibleChars[0].char]));
+    } else {
+        for (const { char } of visibleChars) {
+            if (Math.random() < cfg.commentProb) commenters.push(char);
         }
     }
 
     // Persist tasks to localStorage — survives refresh.
     if (commenters.length > 0) {
-        let fireAt = Date.now() + (cfg.firstCommentDelaySec + Math.random() * cfg.firstCommentDelaySec) * 1000;
+        // 手动催几乎立刻执行（0~3 秒），让用户马上看到动静
+        let fireAt = urgent
+            ? Date.now() + Math.random() * 3000
+            : Date.now() + (cfg.firstCommentDelaySec + Math.random() * cfg.firstCommentDelaySec) * 1000;
         for (const char of commenters) {
             addPendingReaction({
                 type: "ai_comment",
@@ -795,7 +852,9 @@ function triggerAIReactionsForPost(post: MomentPost, excludeAuthorId: string): v
                 characterId: char.id,
                 fireAt,
             });
-            fireAt += (cfg.commentGapSec + Math.random() * cfg.commentGapSec * 2) * 1000;
+            fireAt += urgent
+                ? 4000 + Math.random() * 4000
+                : (cfg.commentGapSec + Math.random() * cfg.commentGapSec * 2) * 1000;
         }
     }
 }
