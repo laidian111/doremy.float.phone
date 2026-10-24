@@ -187,19 +187,28 @@ export async function downloadFile(blob: Blob, filename: string, options: Downlo
     // 壳环境：blob: + a[download] 在 WebView 里不会落盘（DownloadManager 取不到内存地址），
     // 必须交给壳写进公共「下载」目录。
     //
-    // 顺序有讲究：**优先分块**，整包直传只留给小文件。
-    // 分块路径与文件大小无关地安全；整包路径超过约 750KB（base64 后越过 Binder
-    // 的 1MB 上限）就会抛 TransactionTooLargeException 被静默吞成 false，
-    // 表现是「点了导出没反应」。1MB 以下仍走整包，少几次往返。
+    // 一律走分块路径，**不再按大小分流**。原先的「小文件走 saveBase64File、
+    // 大文件走分块」看起来更省事，实际留了两个坑：
+    //   1. 分界点附近的行为不一致，出问题时现象随文件大小漂移，极难复现；
+    //   2. 整包直传哪怕只有 300KB，base64 后也接近 Binder 上限的一半，
+    //      再叠加字符串与 JNI 开销就可能抛 TransactionTooLargeException，
+    //      而原生侧 runCatching 会把它吞成 false —— 用户看到的就是「点了没反应」。
+    // 分块的代价只是多几次往返，换来的是与文件大小完全无关的稳定性，值得。
     const shell = readFloatShellBridge();
     if (shell) {
-        const useChunked = typeof shell.beginFileChunked === "function";
-        if (useChunked && blob.size > CHUNK_BYTES) {
+        if (typeof shell.beginFileChunked === "function") {
             if (await saveViaChunkedBridge(blob, filename)) {
                 setTimeout(() => URL.revokeObjectURL(url), 1000);
                 return;
             }
-        } else if (shell.saveBase64File) {
+            // 分块失败是硬错误，不能再悄悄退回浏览器下载：WebView 里
+            // a[download] 对 blob: 完全无效，用户只会看到「点了没反应」，
+            // 而根本不知道出了什么事。抛出去让调用方显示明确原因。
+            setTimeout(() => URL.revokeObjectURL(url), 1000);
+            throw new Error("导出失败：无法写入手机「下载」目录。请检查存储空间，或确认 App 是最新版本。");
+        }
+        // 老版本壳没有分块接口，只能退回整包直传；同样不再静默失败。
+        if (shell.saveBase64File) {
             try {
                 const base64 = await blobToBase64(blob);
                 if (shell.saveBase64File(filename, base64)) {
@@ -207,15 +216,14 @@ export async function downloadFile(blob: Blob, filename: string, options: Downlo
                     return;
                 }
             } catch {
-                // 落到分块路径，再不行才交给浏览器兜底
-                if (useChunked && await saveViaChunkedBridge(blob, filename)) {
-                    setTimeout(() => URL.revokeObjectURL(url), 1000);
-                    return;
-                }
+                // 落到下面的统一报错
             }
+            setTimeout(() => URL.revokeObjectURL(url), 1000);
+            throw new Error("导出失败：当前 App 版本不支持大文件导出，请更新到最新版 APK。");
         }
     }
 
+    // 真正在浏览器里（非壳环境）才用浏览器下载。
     anchorDownload();
     setTimeout(() => URL.revokeObjectURL(url), 1000);
 }

@@ -60,7 +60,7 @@ import {
   type MediaMaintenanceState,
 } from "@/lib/media-maintenance";
 import { clearStorageCategory, scanStorageSpace, type StorageCategoryId, type StorageCategoryStat } from "@/lib/storage-space";
-import { isAndroidBrowser, isIOSBrowser } from "@/lib/download-utils";
+import { isAndroidBrowser, isFloatShell, isIOSBrowser } from "@/lib/download-utils";
 import type { BackupManifest, DataModuleId, DataSnapshot, ImportResult, ModuleStats } from "@/lib/data-management/types";
 
 type PendingImport = {
@@ -473,12 +473,26 @@ export function DataManagement({ onNotice }: DataManagementProps) {
     // 导出侧不静默：数据库打不开 / 关键模块 0 记录必须当面告知，
     // 否则用户会带着一个"看起来成功、实际缺整库"的备份走（用户实报踩坑）
     const warnNote = warnings.length > 0 ? `⚠️ ${warnings.join("；")}` : "";
-    if (isIOSBrowser() || isAndroidBrowser()) {
+    // 原生壳里必须**直接导出**，不能走「先生成、再点保存」这套两段式。
+    //
+    // 两段式是给手机浏览器（Safari/Chrome）准备的：那些浏览器对 blob: 下载
+    // 有额外限制，所以先缓存再让用户点一次。但壳（WebView）不是浏览器——
+    // 它有 AndroidShell 桥，能直接把文件写进公共「下载」目录。
+    // 之前这里只判断 isAndroidBrowser()，而壳的 UA 里同样带 Android，
+    // 于是壳被误判成浏览器，导出流程卡在「请点保存备份文件」那一步，
+    // 用户看到的就是「点了导出没反应」。
+    //
+    // 判断顺序因此很重要：先认壳（能直写磁盘），再退回浏览器的两段式。
+    const inFloatShell = isFloatShell();
+    if (!inFloatShell && (isIOSBrowser() || isAndroidBrowser())) {
       setPendingExport({ blob, manifest });
       return `备份文件已生成：${manifest.modules.length} 个模块，${formatBytes(manifest.totalBytes)}${note}。请点“保存备份文件”。${warnNote}`;
     }
     await downloadBackupBlob(blob, manifest, { disableNativeShare: true });
-    return `已导出 ${manifest.modules.length} 个模块，${formatBytes(manifest.totalBytes)}${note}。${warnNote}`;
+    // 壳里要明确告诉用户去哪儿找文件：写入的是公共「下载」目录，
+    // 不说清楚的话用户会以为没成功（这正是不带路径提示的旧文案的问题）。
+    const locationNote = inFloatShell ? "已保存到手机的「下载」文件夹（Download）。" : "";
+    return `已导出 ${manifest.modules.length} 个模块，${formatBytes(manifest.totalBytes)}${note}。${locationNote}${warnNote}`;
   });
 
   const savePendingExport = async () => {
