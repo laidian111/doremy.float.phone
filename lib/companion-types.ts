@@ -16,6 +16,28 @@
 /** 宠物的外观预设。用 SVG 画，不依赖生图。 */
 export type CompanionSpecies = "cat" | "dog" | "hamster" | "bird" | "slime" | "plant";
 
+/**
+ * 图片序列帧宠物（桌宠那种）。
+ *
+ * 用户上传一张精灵图（sprite sheet，网格排列的动作帧），
+ * 按网格切成帧、按情绪/动作挑一组循环播放。
+ * 网上流行的「用一张立绘生成桌宠」就是这个思路。
+ */
+export type CompanionSpriteSheet = {
+    /** 单帧宽度（源图像素） */
+    frameWidth: number;
+    /** 单帧高度（源图像素） */
+    frameHeight: number;
+    /** 每行几帧（自动算：图宽 / frameWidth） */
+    cols: number;
+    /** 每行帧数的序号从 0 开始；动画按 frameIndexes 循环 */
+    framesByMood: Partial<Record<string, number[]>>;
+    /** 存储路径（media-store:// 或 dataURL） */
+    src: string;
+    /** 播放速度：每帧多少毫秒 */
+    frameMs: number;
+};
+
 /** 一只宠物的归属：某角色私有，或全局共享。 */
 export type CompanionOwner = string; // "char:<contactId>" | "shared"
 
@@ -60,6 +82,8 @@ export type Companion = {
     species: CompanionSpecies;
     /** 用户可调的主色，用于 SVG 着色 */
     color: string;
+    /** 有序列帧图时优先用图，SVG 只是兜底 */
+    sprite?: CompanionSpriteSheet;
     stats: CompanionStats;
     /** 创建时间 */
     createdAt: string;
@@ -82,6 +106,13 @@ export type CompanionConfig = {
     allowCharacterMention: boolean;
     /** 是否允许角色喂食/照顾（会消耗道具感） */
     allowCharacterCare: boolean;
+    /**
+     * 顶部归属条显示哪些角色、按什么顺序。
+     * 「共同」永远在最前（它是所有角色共享的那只，不是可选的）；
+     * 这里只控制「每个角色的那只」显不显示、排第几。
+     * 空数组 = 一个角色都不显示，只有「共同」。
+     */
+    ownerBarCharacterIds: string[];
     /** 自定义动作反馈语；空则用默认 */
     customReactions: Partial<Record<CompanionActionId, string>>;
     /** 用户自定义的物种显示名（比如把 slime 叫「小史莱姆」） */
@@ -101,6 +132,7 @@ export const DEFAULT_COMPANION_CONFIG: CompanionConfig = {
     decayRate: 1,
     allowCharacterMention: true,
     allowCharacterCare: true,
+    ownerBarCharacterIds: [],
     customReactions: {},
     customSpeciesLabels: {},
 };

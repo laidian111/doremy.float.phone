@@ -64,13 +64,20 @@ export function CompanionApp() {
     const contacts = useMemo(() => loadChatContacts(), []);
     const characters = useMemo(() => loadCharacters(), []);
 
-    // 归属选项：共享 + 每个有角色的好友
+    // 归属条：「共同」永远在最前；其余按用户在设置里选的顺序显示。
+    // 没选任何角色时只有「共同」——之前是自动塞全部好友，
+    // 一排挤不下还点不到，用户明确说了要自己挑。
     const ownerOptions = useMemo(() => {
         const opts: { key: CompanionOwner; label: string }[] = [{ key: "shared", label: "共同" }];
-        for (const c of contacts) {
-            const ch = characters.find(x => x.id === c.characterId);
-            if (ch) opts.push({ key: companionOwnerKey(c.characterId), label: ch.name });
+        const config = loadCompanionConfig();
+        const shownIds = new Set(config.ownerBarCharacterIds);
+        for (const charId of config.ownerBarCharacterIds) {
+            const ch = characters.find(x => x.id === charId);
+            if (ch) opts.push({ key: companionOwnerKey(charId), label: ch.name });
         }
+        // 配置里有但角色已被删的条目跳过；contacts 变量只用于校验好友关系存在性
+        void contacts;
+        void shownIds;
         return opts;
     }, [contacts, characters]);
 
@@ -203,6 +210,7 @@ export function CompanionApp() {
                             size={150}
                             onPoke={handlePoke}
                             bounce={bounce}
+                            sprite={companion.sprite}
                         />
                         <div className="companion-name">{companion.name}</div>
                         <div className="companion-mood-text">

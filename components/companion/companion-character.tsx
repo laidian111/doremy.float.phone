@@ -21,8 +21,9 @@
  */
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { CompanionSpecies } from "@/lib/companion-types";
+import type { CompanionSpecies, CompanionSpriteSheet } from "@/lib/companion-types";
 import type { CompanionMood } from "@/lib/companion-storage";
+import { CompanionSprite } from "./companion-sprite";
 
 type Props = {
     species: CompanionSpecies;
@@ -34,6 +35,8 @@ type Props = {
     onPoke?: () => void;
     /** 是否播放「开心弹跳」动画 */
     bounce?: boolean;
+    /** 有序列帧图时优先用图；SVG 只是没图时的兜底 */
+    sprite?: CompanionSpriteSheet;
 };
 
 /** 各物种的身体轮廓路径。用归一化坐标（0-100 视口），便于统一缩放。 */
@@ -175,10 +178,24 @@ function PlantDecoration({ color, mood }: { color: string; mood: CompanionMood }
     );
 }
 
-export function CompanionCharacter({ species, color, mood, size = 160, onPoke, bounce }: Props) {
-    // 眨眼：随机间隔 2~6 秒。固定节奏一眼就能看出是机器，随机才有活物感。
+export function CompanionCharacter({ species, color, mood, size = 160, onPoke, bounce, sprite }: Props) {
+    // 被摸时飘爱心（SVG/序列帧共用）
+    const [hearts, setHearts] = useState<number[]>([]);
+    const heartId = useRef(0);
+    const handleClick = () => {
+        onPoke?.();
+        const id = ++heartId.current;
+        setHearts(prev => [...prev, id]);
+        window.setTimeout(() => setHearts(prev => prev.filter(h => h !== id)), 1100);
+    };
+
+    // ⚠️ Hooks 必须无条件调用（React 规则）：眨眼 state/effect 虽然只有
+    // SVG 路径用得到，也必须先声明再提前 return。放在 if (sprite) return
+    // 之后会导致两个渲染路径的 hooks 数量不一致，切换形态时直接崩。
     const [blinking, setBlinking] = useState(false);
     useEffect(() => {
+        // 序列帧模式下不起定时器：图自己的换帧动画在跑，眨眼没有意义
+        if (sprite) return;
         let cancelled = false;
         let timer: number;
         const schedule = () => {
@@ -192,17 +209,30 @@ export function CompanionCharacter({ species, color, mood, size = 160, onPoke, b
         };
         schedule();
         return () => { cancelled = true; window.clearTimeout(timer); };
-    }, []);
+    }, [sprite]);
 
-    // 被摸时飘爱心
-    const [hearts, setHearts] = useState<number[]>([]);
-    const heartId = useRef(0);
-    const handleClick = () => {
-        onPoke?.();
-        const id = ++heartId.current;
-        setHearts(prev => [...prev, id]);
-        window.setTimeout(() => setHearts(prev => prev.filter(h => h !== id)), 1100);
-    };
+    // 有序列帧图 → 走图片渲染，SVG 的一切都跳过。
+    // 弹跳动画套在外层容器上，图片内部动画（steps 换帧）不受影响。
+    if (sprite) {
+        return (
+            <div
+                className="companion-char"
+                style={{ width: size, height: size, cursor: onPoke ? "pointer" : "default" }}
+                onClick={handleClick}
+                role={onPoke ? "button" : undefined}
+                aria-label={onPoke ? "摸摸它" : undefined}
+            >
+                <div className={bounce ? "companion-char-svg is-bounce" : "companion-char-svg"} style={{ display: "flex", alignItems: "center", justifyContent: "center" }}>
+                    <CompanionSprite sheet={sprite} mood={mood} size={Math.round(size * 0.86)} />
+                </div>
+                {hearts.map(id => (
+                    <span key={id} className="companion-heart">💗</span>
+                ))}
+            </div>
+        );
+    }
+
+    // ── SVG 兜底路径 ──
 
     const ears = EAR_PATHS[species];
     const isPlant = species === "plant";

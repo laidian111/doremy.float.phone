@@ -85,7 +85,10 @@
   flex-direction: column;
   height: 100%;
   overflow-y: auto;
-  padding: 16px 16px 28px;
+  /* 顶部要躲开虚拟状态栏（时间/电量那一条）。项目里所有 App 的
+     顶部都是用 --page-header-safe-top 让位的，这里保持一致——
+     写死 16px 的话内容会被状态栏盖住，还点不到。 */
+  padding: var(--page-header-safe-top, max(48px, env(safe-area-inset-top, 48px))) 16px calc(28px + env(safe-area-inset-bottom, 0px));
   gap: 16px;
 }
 
