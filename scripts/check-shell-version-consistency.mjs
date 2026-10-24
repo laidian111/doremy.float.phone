@@ -68,15 +68,27 @@ if (versionName && mainVersion && versionName !== mainVersion) {
   );
 }
 
-// versionName 形如 1.0.13 -> 小版本 13，应与 versionCode 相等（本项目的约定）
+// versionName 形如 1.0.13 -> 小版本 13，按本项目约定应与 versionCode 相等。
+//
+// 例外：用 `npm run bump:shell --set x.y.0` 显式指定版本时，第三段会是 0，
+// 而 versionCode 必须继续递增（否则 Android 拒绝覆盖安装），两者必然不等。
+// 这种「versionCode 更大」的情况是合法的——覆盖安装只看 versionCode 变大，
+// 第三段只是命名习惯。所以这里只在 versionCode **小于**小版本时报错，
+// 大于时放行并提示一句，避免把正常的显式指定版本误判成错误。
 if (versionName && versionCode !== null) {
   const parts = versionName.split(".");
   const minor = parts.length >= 3 ? Number(parts[2]) : null;
   if (Number.isFinite(minor) && minor !== versionCode) {
-    problems.push(
-      `versionCode=${versionCode} 与 versionName="${versionName}" 的小版本号 ${minor} 不对齐。` +
-      `本项目的约定是两者保持一致，否则难以从版本号判断能否覆盖安装。`
-    );
+    if (versionCode < minor) {
+      problems.push(
+        `versionCode=${versionCode} 小于 versionName="${versionName}" 的小版本号 ${minor}。` +
+        `这意味着 versionCode 没有随版本递增，Android 会拒绝覆盖安装。`
+      );
+    } else {
+      notes.push(
+        `versionCode=${versionCode} 大于 versionName 的小版本号 ${minor}（显式指定版本时的正常情况）`
+      );
+    }
   } else if (Number.isFinite(minor)) {
     notes.push(`versionCode=${versionCode} 与 versionName="${versionName}" 已对齐`);
   }
