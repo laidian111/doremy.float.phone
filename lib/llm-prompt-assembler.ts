@@ -60,6 +60,14 @@ export interface AssemblerInput {
     timedWakeElapsedMinutes?: number;
     timedWakeIntent?: string;
     periodCareContext?: string;
+    /**
+     * 「一起养」小家伙的状态摘要（含名字、第几天、五项状态、当前情绪）。
+     *
+     * 由调用方算好传进来，assembler 不自己去读存储：
+     * assembler 是纯函数，一旦开始读 localStorage 就没法测也没法在
+     * 服务端跑。这里只负责把它塞进宏。
+     */
+    companionContext?: string;
     scheduleSummary?: string;
     currentSchedule?: string;
     longTermMemories?: string;
@@ -624,6 +632,7 @@ export function assemblePromptPayload(input: AssemblerInput): LLMMessage[] {
     const timedWakeElapsedMinutes = input.timedWakeElapsedMinutes ?? 0;
     const timedWakeIntent = input.timedWakeIntent ?? "";
     const periodCareContext = input.periodCareContext ?? "";
+    const companionContext = input.companionContext ?? "";
     const resolvedUserName = userIdentity?.name || userName;
     const blocks: PromptBlock[] = [];
     const timeAware = resolveTimeAware(input.timeAware);
@@ -670,6 +679,7 @@ export function assemblePromptPayload(input: AssemblerInput): LLMMessage[] {
         engine.timedWakeElapsedMinutes = String(timedWakeElapsedMinutes);
         engine.timedWakeIntent = timedWakeIntent;
         engine.periodCareContext = periodCareContext;
+        engine.companionContext = companionContext;
         engine.customStickerNames = input.customStickerNames ?? "";
         engine.customStickerExample = input.customStickerExample ?? "";
         engine.musicLocal = input.musicLocal ?? "";

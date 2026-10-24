@@ -29,6 +29,7 @@ export type IconId =
   | "worldbuilder"
   | "realitybridge"
   | "qa"
+  | "companion"
   | "mixology";
 
 // 桌面文件夹：以 folder: 前缀的 id 伪装成图标占一个格子参与拖拽/换页，
@@ -124,5 +125,11 @@ export const ICONS: Record<IconId, IconMeta> = {
     path: "/world-builder"
   },
   qa: { id: "qa", label: "工坊", tone: "var(--c-icon-qa, #4a505c99)", placeholder: false },
+  companion: {
+    id: "companion",
+    label: "一起养",
+    tone: "var(--c-icon-rose)",
+    placeholder: false
+  },
   mixology: { id: "mixology", label: "独家特调", tone: "var(--c-icon-violet)", placeholder: false },
 };

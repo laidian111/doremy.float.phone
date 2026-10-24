@@ -27,6 +27,13 @@ export class MacroEngine {
     timedWakeElapsedMinutes: string = "";
     timedWakeIntent: string = "";
     periodCareContext: string = "";
+    /**
+     * 「一起养」里那只小家伙的状态摘要。
+     *
+     * 空字符串时宏返回 TRIM 标记，整行被裁掉——没养宠物的人不会看到
+     * 任何多余的提示词。
+     */
+    companionContext: string = "";
     timeContext: string = "";
     systemTimeZone: string = "";
     characterTime: string = "";
@@ -159,6 +166,7 @@ export class MacroEngine {
         if (body === "timedWakeElapsedMinutes" || body === "timedWakeMinutes") return this.timedWakeElapsedMinutes || "0";
         if (body === "timedWakeIntent") return this.timedWakeIntent || "\x00TRIM\x00";
         if (body === "periodCareContext") return this.periodCareContext || "\x00TRIM\x00";
+        if (body === "companionContext") return this.companionContext || "\x00TRIM\x00";
         if (body === "timeContext") return this.timeContext || buildCharacterTimeContext().timeContext;
         if (body === "systemTimeZone") return this.systemTimeZone || getSystemTimeZone();
         if (body === "characterTime") return this.characterTime || "\x00TRIM\x00";

@@ -4083,6 +4083,18 @@ export function createBuiltinPreset(): PresetConfig {
                 tags: ["interview_magazine", "answer"],
             },
             {
+                identifier: "chat_companion_context",
+                name: "▸ 一起养的小家伙",
+                role: "system",
+                // 没养宠物 / 用户关掉了「角色会提到它」时，这个宏返回空，
+                // 整条会被裁掉——不用养宠物的人也能正常用。
+                content: "{{companionContext}}",
+                injection_position: 0,
+                injection_depth: 0,
+                enabled: true,
+                tags: ["chat", "text"],
+            },
+            {
                 identifier: "chat_tools",
                 name: "▸ 聊天工具箱",
                 role: "system",

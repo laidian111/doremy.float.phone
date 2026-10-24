@@ -23,7 +23,9 @@ import {
 } from "./tool-storage";
 import { executeCustomAppToolCall } from "./custom-app-tool-runtime";
 import { characterWorkspace, agentComputerRequest, isAgentComputerConfigured } from "./agent-computer";
-import { AGENT_COMPUTER_CAPABILITY_ID, CHECK_IN_REQUEST_CAPABILITY_ID, CALENDAR_MANAGEMENT_CAPABILITY_ID, DEVICE_ACTION_CAPABILITY_ID, GENERATE_FILE_CAPABILITY_ID, SHARE_CONTENT_CAPABILITY_ID, LOCAL_DATA_LIBRARY_CAPABILITY_ID, MEMORY_WRITE_CAPABILITY_ID, MUSIC_CONTROL_CAPABILITY_ID, NOTE_WALL_CAPABILITY_ID, PERCEPTION_READ_CAPABILITY_ID, PHONE_WIDGET_CAPABILITY_ID, REALITY_BRIDGE_CAPABILITY_ID, SEND_FILE_CAPABILITY_ID, SYSTEM_CALENDAR_CAPABILITY_ID, TIMED_WAKE_CAPABILITY_ID, TOOLBOX_MANAGEMENT_CAPABILITY_ID, getInternalCapability } from "./internal-capability-storage";
+import { AGENT_COMPUTER_CAPABILITY_ID, CHECK_IN_REQUEST_CAPABILITY_ID, CALENDAR_MANAGEMENT_CAPABILITY_ID, COMPANION_CAPABILITY_ID, DEVICE_ACTION_CAPABILITY_ID, GENERATE_FILE_CAPABILITY_ID, SHARE_CONTENT_CAPABILITY_ID, LOCAL_DATA_LIBRARY_CAPABILITY_ID, MEMORY_WRITE_CAPABILITY_ID, MUSIC_CONTROL_CAPABILITY_ID, NOTE_WALL_CAPABILITY_ID, PERCEPTION_READ_CAPABILITY_ID, PHONE_WIDGET_CAPABILITY_ID, REALITY_BRIDGE_CAPABILITY_ID, SEND_FILE_CAPABILITY_ID, SYSTEM_CALENDAR_CAPABILITY_ID, TIMED_WAKE_CAPABILITY_ID, TOOLBOX_MANAGEMENT_CAPABILITY_ID, getInternalCapability } from "./internal-capability-storage";
+import { COMPANION_ACTIONS, COMPANION_STAT_META, type CompanionActionId, type CompanionOwner } from "./companion-types";
+import { companionOwnerKey, findCompanion, formatCompanionForPrompt, getCompanionSettled, loadCompanionConfig, performCompanionAction } from "./companion-storage";
 import {
     checkQueryCooldown,
     describeStatusByFocus,
@@ -829,6 +831,7 @@ async function executeInternalTool(call: ToolCall, context?: ToolExecutionContex
     if (call.name === "发送文件") return executeSendFileTool(call);
     if (call.name === "生成文件") return executeGenerateFileTool(call);
     if (call.name === "分享内容") return executeShareContentTool(call);
+    if (call.name === "一起养") return executeCompanionTool(call, context);
     if (call.name === "角色电脑") return executeAgentComputerTool(call, context);
     // 内置工具必须排在用户自定义的现实桥动作**之前**：
     // 用户完全可能把快捷动作也命名成「查看手机状态」，若让现实桥先匹配，
@@ -2856,6 +2859,143 @@ async function executeGenerateFileTool(call: ToolCall): Promise<ToolResult> {
  * 返回 richMessage 而不是 mediaAttachments：分享卡片带结构化字段
  * （站点名、摘要、标签），mediaAttachments 的 type 表达不了。
  */
+async function executeCompanionTool(call: ToolCall, context?: ToolExecutionContext): Promise<ToolResult> {
+    const capability = getInternalCapability(COMPANION_CAPABILITY_ID);
+    if (!capability || !capability.enabled || capability.mode === "off") {
+        return {
+            name: call.name,
+            success: false,
+            error: "一起养能力未启用",
+            continueConversation: false,
+            persistToHistory: false,
+            userNotice: "一起养能力未启用（工具箱 → 内置能力）",
+        };
+    }
+
+    const config = loadCompanionConfig();
+    if (!config.enabled) {
+        return {
+            name: call.name,
+            success: false,
+            error: "一起养功能已关闭",
+            continueConversation: false,
+            persistToHistory: false,
+            userNotice: "一起养功能已在设置里关闭",
+        };
+    }
+
+    // 归属：优先用角色私有的那只；没有就退回共享那只。
+    //
+    // 为什么不只认角色私有的：用户可能只养了「共同」那一只，
+    // 这时候角色说「我喂了它」不该失败——退回共享才符合直觉。
+    const ownerCandidates: CompanionOwner[] = [];
+    if (context?.characterId) ownerCandidates.push(companionOwnerKey(context.characterId));
+    ownerCandidates.push("shared");
+
+    let owner: CompanionOwner | null = null;
+    for (const candidate of ownerCandidates) {
+        if (findCompanion(candidate)) { owner = candidate; break; }
+    }
+
+    if (!owner) {
+        return {
+            name: call.name,
+            success: false,
+            error: "还没有养任何小家伙",
+            continueConversation: true,
+            persistToHistory: false,
+            data: "{{user}}还没有和你一起养小家伙。不要自己编一只出来——可以问问要不要一起去「一起养」里领养一只。",
+        };
+    }
+
+    const args = call.args || {};
+    const actionRaw = typeof args.action === "string" ? args.action.trim().toLowerCase() : "status";
+    const note = typeof args.note === "string" ? args.note.trim() : "";
+
+    // 状态查询：只读，不消耗冷却
+    if (actionRaw === "status" || actionRaw === "") {
+        const settled = getCompanionSettled(owner) || findCompanion(owner)!;
+        return {
+            name: call.name,
+            success: true,
+            continueConversation: true,
+            persistToHistory: false,
+            data: formatCompanionForPrompt(settled) + (note ? `\n（你说：${note}）` : ""),
+        };
+    }
+
+    const validActions = COMPANION_ACTIONS.map(a => a.id);
+    if (!validActions.includes(actionRaw as CompanionActionId)) {
+        return {
+            name: call.name,
+            success: false,
+            error: `未知动作：${actionRaw}`,
+            continueConversation: true,
+            persistToHistory: false,
+            data: `动作只能是这些之一：status、${validActions.join("、")}。`,
+        };
+    }
+
+    // 角色照顾需要用户授权（默认开，但可关）
+    if (!config.allowCharacterCare) {
+        return {
+            name: call.name,
+            success: false,
+            error: "用户关闭了「角色能照顾它」",
+            continueConversation: true,
+            persistToHistory: false,
+            data: "{{user}}在设置里关掉了「角色能照顾它」。你可以陪着说话，但不要替{{user}}做照顾动作。",
+        };
+    }
+
+    const result = performCompanionAction(owner, actionRaw as CompanionActionId);
+    if (!result.ok) {
+        if (result.reason === "cooldown") {
+            const sec = Math.ceil(result.remainingMs / 1000);
+            return {
+                name: call.name,
+                success: false,
+                error: "动作还在冷却中",
+                continueConversation: true,
+                persistToHistory: false,
+                data: `这个动作刚做过，还要等 ${sec} 秒。别硬重试，换个说法或者过会儿再来。`,
+            };
+        }
+        return {
+            name: call.name,
+            success: false,
+            error: "找不到小家伙",
+            continueConversation: true,
+            persistToHistory: false,
+        };
+    }
+
+    const companion = result.companion;
+    const action = COMPANION_ACTIONS.find(a => a.id === actionRaw)!;
+    const customReaction = config.customReactions[actionRaw as CompanionActionId];
+
+    const deltas = Object.entries(result.deltas)
+        .filter(([, v]) => v !== 0)
+        .map(([k, v]) => `${COMPANION_STAT_META[k as keyof typeof COMPANION_STAT_META].label}${v > 0 ? "+" : ""}${v}`)
+        .join(" ");
+
+    return {
+        name: call.name,
+        success: true,
+        continueConversation: true,
+        persistToHistory: false,
+        data: [
+            `你刚刚对「${companion.name}」做了：${action.label}`,
+            deltas ? `变化：${deltas}` : "状态没有明显变化（可能已经满了）",
+            formatCompanionForPrompt(companion),
+            customReaction ? `（你之前为这个动作设置过反馈语：${customReaction}）` : "",
+            note ? `（你说：${note}）` : "",
+            "",
+            "用你自己的话跟{{user}}说这件事，别念数字。",
+        ].filter(Boolean).join("\n"),
+    };
+}
+
 async function executeShareContentTool(call: ToolCall): Promise<ToolResult> {
     const capability = getInternalCapability(SHARE_CONTENT_CAPABILITY_ID);
     if (!capability || !capability.enabled || capability.mode === "off") {

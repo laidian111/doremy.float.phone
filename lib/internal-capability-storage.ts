@@ -14,6 +14,7 @@ export const CALENDAR_MANAGEMENT_CAPABILITY_ID = "calendar_management";
 export const SEND_FILE_CAPABILITY_ID = "send_file";
 export const GENERATE_FILE_CAPABILITY_ID = "generate_file";
 export const SHARE_CONTENT_CAPABILITY_ID = "share_content";
+export const COMPANION_CAPABILITY_ID = "companion_care";
 export const AGENT_COMPUTER_CAPABILITY_ID = "agent_computer";
 export const LOCAL_DATA_LIBRARY_CAPABILITY_ID = "local_data_library";
 export const TOOLBOX_MANAGEMENT_CAPABILITY_ID = "toolbox_management";
@@ -824,6 +825,51 @@ const SHARE_CONTENT_USAGE_GUIDE = [
     "  - 你的看法写在 description 里，或者卡片发出后接着说。",
 ].join("\n");
 
+const COMPANION_PARAMETER_SCHEMA = JSON.stringify({
+    type: "object",
+    properties: {
+        action: {
+            type: "string",
+            enum: ["status", "feed", "play", "clean", "pet", "sleep", "medicine"],
+            description: "要做什么。status=只是看看它现在怎么样；其余是对应的照顾动作。",
+        },
+        note: {
+            type: "string",
+            description: "你说的一句话，比如「它今天好像有点没精神」。可不填。",
+        },
+    },
+    required: ["action"],
+});
+
+const COMPANION_USAGE_GUIDE = [
+    "以下是你获取指令的返回结果：",
+    "服务：一起养",
+    "用途：查看、照顾你和{{user}}共同养的小家伙。",
+    "",
+    "这个工具背后的东西：",
+    "  - 你和{{user}}一起养了一只小动物/小家伙，它有自己的名字。",
+    "  - 它有五项状态：饱食、心情、清洁、健康、亲密。会随时间自然变化。",
+    "  - 状态是你和{{user}}一起照顾出来的，不是摆设。",
+    "",
+    "什么时候用：",
+    "  - {{user}}提到它、问它怎么样时，先用 action=status 看看它现在的状态。",
+    "  - {{user}}说「你去喂喂它」「帮我看看它」时，做对应的动作。",
+    "  - 你自己想起来它了，也可以主动去看看——这是你们共同的东西。",
+    "",
+    "动作：一起养",
+    "参数：",
+    "  - action (string, 必填): status / feed / play / clean / pet / sleep / medicine",
+    "  - note (string): 你说的一句话，可不填",
+    "示例：",
+    '[执行动作:一起养({"action":"status"})]',
+    '[执行动作:一起养({"action":"feed","note":"我给你喂了，它吃得可香了"})]',
+    "",
+    "注意：",
+    "  - 状态数字是给你参考的，不要念给{{user}}听。用你自己的话描述它现在的样子。",
+    "  - 动作有冷却时间。刚做过同一个动作时会被拒绝，这时候别硬重试，换个说法就行。",
+    "  - 如果{{user}}还没养，工具会告诉你「还没有」。别自己编一只出来。",
+].join("\n");
+
 const SEND_FILE_USAGE_GUIDE = [
     "以下是你获取指令的返回结果：",
     "服务：发送文件",
@@ -1500,6 +1546,15 @@ const BUILTIN_INTERNAL_CAPABILITIES: InternalCapabilityConfig[] = [
         updatedAt: 0,
     },
     {
+        id: COMPANION_CAPABILITY_ID,
+        name: "一起养",
+        description: "查看和照顾你和{{user}}共同养的小家伙：喂食、陪玩、清理、摸摸、哄睡。也能知道它今天状态如何。",
+        enabled: false,
+        mode: "auto",
+        createdAt: 0,
+        updatedAt: 0,
+    },
+    {
         id: LOCAL_DATA_LIBRARY_CAPABILITY_ID,
         name: "本地资料库",
         description: "浏览、读取和搜索{{user}}小手机里的本地数据，包括角色卡、聊天、朋友圈、记忆、工具箱、设置和应用数据。",
@@ -1651,6 +1706,14 @@ export function getInternalCapabilityToolDefinition(capability: InternalCapabili
             description: capability.description,
             parameterSchema: SHARE_CONTENT_PARAMETER_SCHEMA,
             usageGuide: SHARE_CONTENT_USAGE_GUIDE,
+        };
+    }
+    if (capability.id === COMPANION_CAPABILITY_ID) {
+        return {
+            name: capability.name,
+            description: capability.description,
+            parameterSchema: COMPANION_PARAMETER_SCHEMA,
+            usageGuide: COMPANION_USAGE_GUIDE,
         };
     }
     if (capability.id === LOCAL_DATA_LIBRARY_CAPABILITY_ID) {

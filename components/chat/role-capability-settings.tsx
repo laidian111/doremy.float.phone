@@ -22,6 +22,7 @@ import {
     setCapabilityOverride,
 } from "@/lib/capability-overrides";
 import {
+    COMPANION_CAPABILITY_ID,
     GENERATE_FILE_CAPABILITY_ID,
     SHARE_CONTENT_CAPABILITY_ID,
     loadInternalCapabilities,
@@ -34,6 +35,7 @@ import type { ChatSession } from "@/lib/chat-storage";
 const ROLE_SCOPED_CAPABILITIES = [
     { id: SHARE_CONTENT_CAPABILITY_ID, label: "分享内容", hint: "让 TA 能主动分享小红书帖子或网页链接" },
     { id: GENERATE_FILE_CAPABILITY_ID, label: "生成文件", hint: "让 TA 能把文字整理成 docx/txt 文件发给你" },
+    { id: COMPANION_CAPABILITY_ID, label: "一起养", hint: "让 TA 能查看和照顾你们共同养的小家伙" },
 ];
 
 export function RoleCapabilitySettings({ session }: { session: ChatSession }) {

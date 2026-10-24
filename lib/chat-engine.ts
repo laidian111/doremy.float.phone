@@ -5,6 +5,7 @@ import { maybeAppendShortcutCapability, maybeAppendPerceptionStatus } from "./of
 import { maybeBuildStatusInjection } from "./perception/describe";
 import { loadCharacters } from "./character-storage";
 import { buildScreenEffectPromptHint } from "./chat-screen-effects";
+import { buildCompanionPromptContext } from "./companion-storage";
 import { emitChatPluginEvent, runChatPluginTransform } from "./chat-plugin-hooks";
 import { buildChatPluginPromptFragments } from "./chat-plugin-storage";
 import type { LlmRequestPayload } from "./chat-plugin-types";
@@ -1945,6 +1946,7 @@ export async function buildChatPromptMessages(
         timedWakeElapsedMinutes: options?.timedWakeElapsedMinutes,
         timedWakeIntent: options?.timedWakeIntent,
         periodCareContext: options?.periodCareContext,
+        companionContext: buildCompanionPromptContext(character.id),
         scheduleSummary,
         currentSchedule,
         coreMemories,

@@ -30,6 +30,7 @@ import { VnApp } from "@/components/vn/vn-app";
 import ReadingApp from "@/components/reading/reading-app";
 import MapApp from "@/components/map/map-app";
 import { DwellingApp } from "@/components/dwelling/dwelling-app";
+import { CompanionApp } from "@/components/companion/companion-app";
 import { MascotFloat } from "@/components/mascot/mascot-float";
 import { PerceptionBootstrap } from "@/components/perception/perception-bootstrap";
 import { MascotPreviewHost } from "@/components/mascot/mascot-preview-host";
@@ -4122,6 +4123,10 @@ html,body{margin:0;padding:0;width:100%;height:100%;background:#121110;color:rgb
           />
         </CustomAppForegroundBoundary>
       );
+    }
+
+    if (activeApp === "companion") {
+      return <CompanionApp />;
     }
 
     if (activeApp === "chat") {
