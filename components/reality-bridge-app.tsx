@@ -720,8 +720,21 @@ export function RealityBridgeApp({ onClose, onNotice, onOpenSettings }: {
     if (schedule) {
       if (schedule.kind === "interval") parts.push(`每隔 ${schedule.minutes ?? 60} 分钟`);
       else if (schedule.kind === "weekly") parts.push(`每周${["日", "一", "二", "三", "四", "五", "六"][schedule.weekday ?? 1]} ${schedule.time ?? "08:00"}`);
-      else parts.push(`每天 ${schedule.time ?? "08:00"}`);
+      else {
+        // 「每天」要能区分出「仅工作日」「仅周末」，否则摘要里看不出周末会不会响
+        const days = schedule.weekdays;
+        const dayLabel = !Array.isArray(days) || days.length === 0
+          ? "每天"
+          : days.length === 5 && [1, 2, 3, 4, 5].every(d => days.includes(d))
+            ? "工作日"
+            : days.length === 2 && days.includes(0) && days.includes(6)
+              ? "周末"
+              : days.map(d => ["日", "一", "二", "三", "四", "五", "六"][d]).join("、");
+        parts.push(`${dayLabel} ${schedule.time ?? "08:00"}`);
+      }
+      if (rule.jitterMinutes) parts.push(`±${rule.jitterMinutes} 分钟浮动`);
     }
+    if (rule.dailyLimit) parts.push(`每天最多 ${rule.dailyLimit} 次`);
     // 安静时段必须出现在摘要里：它是一条「让规则在部分时间不生效」的设置，
     // 不显示的话，用户看到「每隔 30 分钟」会以为半夜也会发，从而不敢用这条规则。
     if (rule.quietHours?.enabled) {
@@ -1985,6 +1998,50 @@ export function RealityBridgeApp({ onClose, onNotice, onOpenSettings }: {
                   aria-label="允许自定义APP订阅"
                 />
               </div>
+
+              {/* ── 全局安静时段 ──
+                  放在这里而不是每条规则里，是因为「晚上要睡觉」是设备层面的属性，
+                  不是某条规则的属性。配十条规则要勾十次、漏一条就半夜响，
+                  那这个设置等于没有。单条规则仍可覆盖它。 */}
+              <div className="rb-main-row" style={{ marginTop: 4 }}>
+                <span className="rb-icchip">{RB_ICON_BELL}</span>
+                <div className="rb-main-text">
+                  <b>全局安静时段</b>
+                  <p>这段时间所有联动都不打扰；单条规则可以单独覆盖</p>
+                </div>
+                <button
+                  type="button"
+                  className={`rb-switch ${settings.quietHours?.enabled ? "on" : ""}`}
+                  onClick={() => updateSettings({
+                    quietHours: settings.quietHours?.enabled
+                      ? undefined
+                      : { enabled: true, start: "23:00", end: "08:00", logSkipped: true },
+                  })}
+                  aria-label="全局安静时段"
+                />
+              </div>
+              {settings.quietHours?.enabled ? (
+                <div className="rb-quiet-block" style={{ marginTop: 0 }}>
+                  <div className="rb-action-body grid2">
+                    <label>从
+                      <input type="time" value={settings.quietHours.start}
+                        onChange={event => updateSettings({
+                          quietHours: { ...settings.quietHours!, start: event.target.value || "23:00" },
+                        })} />
+                    </label>
+                    <label>到
+                      <input type="time" value={settings.quietHours.end}
+                        onChange={event => updateSettings({
+                          quietHours: { ...settings.quietHours!, end: event.target.value || "08:00" },
+                        })} />
+                    </label>
+                  </div>
+                  <p className="rb-hint">
+                    结束时间早于开始时间表示跨过午夜，例如 23:00 → 08:00。
+                    对「每隔多少分钟」这类规则尤其重要——不设的话半夜也会照发。
+                  </p>
+                </div>
+              ) : null}
             </div>
           </div>
         ) : null}
@@ -2198,6 +2255,40 @@ export function RealityBridgeApp({ onClose, onNotice, onOpenSettings }: {
                     </label>
                   </div>
                 )}
+
+                {/* 生效日：只对「每天」有意义。
+                    weekly 自带星期选择、interval 是「每隔」不该被星期限制，
+                    所以这块只在 daily 时出现。 */}
+                {editing.schedule.kind === "daily" ? (
+                  <div className="rb-quiet-block" style={{ margin: "8px 0 0" }}>
+                    <div className="rb-main-text" style={{ marginBottom: 2 }}>
+                      <b style={{ fontSize: 13 }}>生效日</b>
+                    </div>
+                    <div className="rb-freq" style={{ marginTop: 0 }}>
+                      {([
+                        { label: "每天", days: undefined },
+                        { label: "仅工作日", days: [1, 2, 3, 4, 5] },
+                        { label: "仅周末", days: [0, 6] },
+                      ] as const).map(opt => {
+                        const current = editing.schedule?.weekdays;
+                        const isSel = opt.days === undefined
+                          ? !current || current.length === 0
+                          : Array.isArray(current) && current.length === opt.days.length
+                            && opt.days.every(d => current.includes(d));
+                        return (
+                          <button key={opt.label} type="button" className={isSel ? "sel" : ""}
+                            onClick={() => setEditing({
+                              ...editing,
+                              schedule: { ...editing.schedule!, weekdays: opt.days ? [...opt.days] : undefined },
+                            })}>{opt.label}</button>
+                        );
+                      })}
+                    </div>
+                    <p className="rb-hint">
+                      选「仅工作日」后，周末不会触发——早上八点叫你起床这种事，周末通常不需要。
+                    </p>
+                  </div>
+                ) : null}
                 <p className="rb-hint">到点自动执行，不需要任何信号。只在小手机打开或后台保活时触发；错过的时间点不会补齐。</p>
               </>
             ) : (
@@ -2223,7 +2314,10 @@ export function RealityBridgeApp({ onClose, onNotice, onOpenSettings }: {
 
             {/* ── 安静时段 ──
                 放在定时/信号两套设置之后、触发间隔之前：它是「什么时候别打扰我」
-                这一层的设置，对两类规则都生效，所以不该塞进 schedule 分支里。 */}
+                这一层的设置，对两类规则都生效，所以不该塞进 schedule 分支里。
+
+                默认跟随全局：绝大多数规则不需要单独设，用户只要在桥接设置里
+                配一次就够。只有确实要特殊对待某条规则时才在这里覆盖。 */}
             <div className="rb-quiet-block">
               <label className="rb-quiet-toggle">
                 <input
@@ -2232,17 +2326,20 @@ export function RealityBridgeApp({ onClose, onNotice, onOpenSettings }: {
                   onChange={event => setEditing({
                     ...editing,
                     quietHours: event.target.checked
-                      ? { enabled: true, start: editing.quietHours?.start ?? "23:00", end: editing.quietHours?.end ?? "08:00", logSkipped: editing.quietHours?.logSkipped ?? true }
+                      ? {
+                          enabled: true,
+                          start: editing.quietHours?.start ?? settings.quietHours?.start ?? "23:00",
+                          end: editing.quietHours?.end ?? settings.quietHours?.end ?? "08:00",
+                          logSkipped: editing.quietHours?.logSkipped ?? true,
+                        }
                       : undefined,
                   })}
                 />
-                <span>设置安静时段</span>
+                <span>单独设置安静时段</span>
               </label>
-              <p className="rb-hint">
-                这段时间内不执行任何动作。对「每隔多少分钟」这类规则尤其重要——否则半夜也会照发。
-              </p>
               {editing.quietHours?.enabled ? (
                 <>
+                  <p className="rb-hint">这条规则用下面的时段，不再跟随全局设置。</p>
                   <div className="rb-action-body grid2">
                     <label>从
                       <input type="time" value={editing.quietHours.start}
@@ -2275,7 +2372,44 @@ export function RealityBridgeApp({ onClose, onNotice, onOpenSettings }: {
                     <span>在接收记录里留下「已跳过」的痕迹</span>
                   </label>
                 </>
-              ) : null}
+              ) : (
+                <p className="rb-hint">
+                  {settings.quietHours?.enabled
+                    ? `正在跟随全局设置：${settings.quietHours.start}–${settings.quietHours.end} 不打扰。勾选上面可单独覆盖。`
+                    : "未启用。想在夜里不被打扰，可以先在「桥接设置」里开一个全局安静时段。"}
+                </p>
+              )}
+            </div>
+
+            {/* ── 拟人化与总量控制 ──
+                这两项解决的是「像不像人」和「会不会太多」，与上面的时间设置
+                是不同维度的问题，所以单独一块。 */}
+            <div className="rb-quiet-block">
+              <div className="rb-main-text" style={{ marginBottom: 2 }}>
+                <b style={{ fontSize: 13 }}>像真人一点</b>
+              </div>
+              <label>随机浮动（分钟）
+                <input type="number" min={0} max={120} value={editing.jitterMinutes ?? 0}
+                  onChange={event => setEditing({
+                    ...editing,
+                    jitterMinutes: Math.max(0, Math.min(120, Number(event.target.value) || 0)) || undefined,
+                  })} />
+              </label>
+              <p className="rb-hint">
+                实际触发时刻在设定时间上下随机浮动这么多分钟。填 5 就是 07:55–08:05 之间随机。
+                定时精确到分钟会让「早安」显得像闹钟而不是人，加一点浮动更像想起来了才说。
+              </p>
+              <label>每天最多触发（次）
+                <input type="number" min={0} max={99} value={editing.dailyLimit ?? 0}
+                  onChange={event => setEditing({
+                    ...editing,
+                    dailyLimit: Math.max(0, Math.min(99, Number(event.target.value) || 0)) || undefined,
+                  })} />
+              </label>
+              <p className="rb-hint">
+                填 0 或留空表示不限。触发间隔只控制「两次之间隔多久」，管不住一天总共发多少；
+                想「一天最多关心我三次」，在这里填 3。
+              </p>
             </div>
             <label>触发间隔
               <select

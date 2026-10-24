@@ -38,6 +38,27 @@ export type BridgeSettings = {
   pollSeconds: number;
   /** 总开关：收到的每条桥数据都广播 bridge.data 事件给已订阅的自定义 APP（无需逐条规则勾选） */
   broadcastToApps: boolean;
+  /**
+   * 全局安静时段：对**所有**规则生效的默认时段。
+   *
+   * 为什么要有全局这一层：单条规则各设一次安静时段，配十条规则就要勾十次，
+   * 漏一条就会在半夜响。用户心里的模型是「我这个人晚上要睡觉」——那是设备
+   * 层面的属性，不是某条规则的属性，所以默认值必须放在这里。
+   *
+   * 单条规则仍可覆盖（见 BridgeRule.quietHours），但默认「跟随全局」。
+   */
+  quietHours?: BridgeQuietHours;
+};
+
+/** 安静时段的形状。规则级与全局共用同一套字段，避免两处语义分叉。 */
+export type BridgeQuietHours = {
+  enabled: boolean;
+  /** HH:MM，安静时段开始 */
+  start: string;
+  /** HH:MM，安静时段结束；早于 start 表示跨过午夜 */
+  end: string;
+  /** true = 跳过时在接收记录里留痕；缺省 true（静默跳过会让人以为规则坏了） */
+  logSkipped?: boolean;
 };
 
 const DEFAULT_SETTINGS: BridgeSettings = { enabled: true, pollSeconds: 20, broadcastToApps: true };
@@ -52,10 +73,27 @@ export function loadBridgeSettings(): BridgeSettings {
       enabled: parsed.enabled !== false,
       pollSeconds: Math.max(10, Math.min(300, Number(parsed.pollSeconds) || 20)),
       broadcastToApps: parsed.broadcastToApps !== false,
+      quietHours: normalizeQuietHours(parsed.quietHours),
     };
   } catch {
     return { ...DEFAULT_SETTINGS };
   }
+}
+
+/** 把任意来源的安静时段配置收敛成合法形状；非法/缺失返回 undefined（= 不启用）。 */
+export function normalizeQuietHours(raw: unknown): BridgeQuietHours | undefined {
+  if (!raw || typeof raw !== "object") return undefined;
+  const value = raw as Partial<BridgeQuietHours>;
+  if (value.enabled !== true) return undefined;
+  const start = typeof value.start === "string" ? value.start.trim() : "";
+  const end = typeof value.end === "string" ? value.end.trim() : "";
+  if (!/^\d{1,2}:\d{2}$/.test(start) || !/^\d{1,2}:\d{2}$/.test(end)) return undefined;
+  return {
+    enabled: true,
+    start,
+    end,
+    logSkipped: value.logSkipped !== false,
+  };
 }
 
 export function saveBridgeSettings(settings: BridgeSettings): void {
@@ -391,6 +429,60 @@ export function markBridgeRuleRun(ruleId: string): void {
       .forEach(key => delete runs[key]);
   }
   kvSet(BRIDGE_RULE_RUNS_KEY, JSON.stringify(runs));
+}
+
+/* ---------- 每日触发计数（每日上限用） ---------- */
+
+/**
+ * 每日计数与「上次触发时间」分开存。
+ *
+ * 为什么不复用 BRIDGE_RULE_RUNS_KEY：那个映射只记「最后一次时间」，信息量
+ * 不足以回答「今天跑了几次」；而改它的结构会让离线联动同步（服务端也在读写
+ * 这个映射做冷却判断）跟着改，风险扩散到云端那条链路。独立一个键，各管各的。
+ */
+const BRIDGE_DAILY_RUNS_KEY = "ai_phone_reality_bridge_daily_runs_v1";
+registerKvMigration(BRIDGE_DAILY_RUNS_KEY);
+
+type DailyRunsMap = Record<string, { dateKey: string; count: number }>;
+
+function loadDailyRuns(): DailyRunsMap {
+  try {
+    const raw = kvGet(BRIDGE_DAILY_RUNS_KEY);
+    const parsed = raw ? JSON.parse(raw) as unknown : {};
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      ? parsed as DailyRunsMap
+      : {};
+  } catch {
+    return {};
+  }
+}
+
+/** 本地日期键（YYYY-M-D），跨时区/夏令时都不影响「同一天」的判定。 */
+export function bridgeDateKey(date: Date = new Date()): string {
+  return `${date.getFullYear()}-${date.getMonth()}-${date.getDate()}`;
+}
+
+/** 这条规则今天已经执行了几次；不是今天返回 0。 */
+export function getBridgeRuleDailyRuns(ruleId: string): { dateKey: string; count: number } {
+  const record = loadDailyRuns()[ruleId];
+  if (!record || typeof record.count !== "number") return { dateKey: "", count: 0 };
+  return { dateKey: record.dateKey, count: record.count };
+}
+
+/** 记一次执行（同一天累加，换天归零）。 */
+export function markBridgeRuleDailyRun(ruleId: string, now: Date = new Date()): void {
+  const runs = loadDailyRuns();
+  const key = bridgeDateKey(now);
+  const record = runs[ruleId];
+  runs[ruleId] = {
+    dateKey: key,
+    count: record?.dateKey === key ? record.count + 1 : 1,
+  };
+  // 已删除规则的计数会一直留着，顺手清掉过期条目
+  for (const [id, value] of Object.entries(runs)) {
+    if (value.dateKey !== key) delete runs[id];
+  }
+  kvSet(BRIDGE_DAILY_RUNS_KEY, JSON.stringify(runs));
 }
 
 /* ---------- 本地流水 ---------- */

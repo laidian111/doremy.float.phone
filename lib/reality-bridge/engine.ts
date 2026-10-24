@@ -33,10 +33,13 @@ import {
   appendBridgeFeed,
   appendBridgeOutbox,
   bridgeConnection,
+  bridgeDateKey,
+  getBridgeRuleDailyRuns,
   getBridgeRuleLastRunAt,
   loadBridgeRules,
   loadBridgeSettings,
   loadBridgeShortcutActions,
+  markBridgeRuleDailyRun,
   markBridgeRuleRun,
   mergeBridgeRuleRuns,
 } from "./storage";
@@ -430,14 +433,24 @@ export async function processBridgeItem(item: BridgeItem): Promise<BridgeFeedEnt
     actions: [],
     receivedAt: new Date().toISOString(),
   };
+  // 全局安静时段只读一次，这一轮里所有规则共用同一个默认值。
+  const globalQuietHours = loadBridgeSettings().quietHours;
   for (const rule of rules) {
     // 安静时段：夜里收到信号也照样不执行。
     // 放在触发间隔之前判——安静时段是「现在别打扰」，优先级高于任何频率控制；
     // 而且这样不会因为夜里触发一次而白占掉触发间隔。
-    if (isInQuietHours(rule.quietHours)) {
-      if (rule.quietHours?.logSkipped !== false) {
+    // 规则自己设了时段就用规则的，没设才用全局默认（见 effectiveQuietHours）。
+    const quiet = effectiveQuietHours(rule, globalQuietHours);
+    if (isInQuietHours(quiet)) {
+      if (quiet?.logSkipped !== false) {
         entry.actions.push(`「${rule.name}」处于安静时段，这次不执行`);
       }
+      continue;
+    }
+    // 每日上限：与定时规则同一套计数，超了今天就不再执行。
+    const dailyLimit = Math.max(0, Math.floor(Number(rule.dailyLimit) || 0));
+    if (dailyLimit > 0 && runsTodayCount(rule, new Date()) >= dailyLimit) {
+      entry.actions.push(`「${rule.name}」今天已达 ${dailyLimit} 次上限，这次只存档`);
       continue;
     }
     // 触发间隔：间隔内再次收到同信号，只存档不执行（避免反复打开某 APP 时刷屏）
@@ -448,6 +461,7 @@ export async function processBridgeItem(item: BridgeItem): Promise<BridgeFeedEnt
     }
     try {
       markBridgeRuleRun(rule.id);
+      markBridgeRuleDailyRun(rule.id);
       const text = await processText(rule, item);
       if (text !== item.payload) entry.processed = text.slice(0, 2000);
       const delay = Math.max(0, Number(rule.delayMinutes) || 0);
@@ -521,8 +535,9 @@ export async function runDueDelayedTasks(): Promise<number> {
     // 一次性动作（「十分钟后提醒我」），丢了就再也不会发生；而定时规则
     // 明天还有下一次，跳过无所谓。顺延既守住了「别半夜吵我」，也没让
     // 用户排的事凭空消失。
-    if (isInQuietHours(rule.quietHours)) {
-      const resumeAt = nextQuietHoursEnd(rule.quietHours);
+    const quiet = effectiveQuietHours(rule, loadBridgeSettings().quietHours);
+    if (isInQuietHours(quiet)) {
+      const resumeAt = nextQuietHoursEnd(quiet);
       if (resumeAt) {
         const rescheduled = loadDelayedTasks();
         rescheduled.push({ ...task, dueAt: resumeAt.getTime() });
@@ -579,7 +594,20 @@ function parseHhMm(value: string | undefined): number | null {
 }
 
 /**
- * 现在是不是落在这条规则的安静时段里。
+ * 这条规则实际生效的安静时段：规则自己设了就用规则自己的，否则用全局默认。
+ *
+ * 语义是「覆盖」不是「叠加」——给某条规则单独设时段，通常是因为它比别的更特殊
+ * （比如只有它允许半夜响）。叠加的话全局永远盖在上面，这条「特殊」就永远生效不了。
+ */
+export function effectiveQuietHours(
+  rule: Pick<BridgeRule, "quietHours">,
+  globalQuietHours?: BridgeRule["quietHours"],
+): BridgeRule["quietHours"] {
+  return rule.quietHours?.enabled ? rule.quietHours : globalQuietHours;
+}
+
+/**
+ * 现在是不是落在安静时段里。
  *
  * 跨午夜必须单独处理：23:00 → 08:00 是最常见的一段，如果写成
  * `now >= start && now <= end`，这段区间永远为假（起点比终点大），
@@ -629,6 +657,46 @@ function formatHhMm(date: Date): string {
 }
 
 /**
+ * 今天是不是这条 daily 规则该跑的日子。
+ *
+ * weekdays 为空/缺省 = 每天（保持旧行为，老规则升级后不受影响）。
+ */
+function matchesWeekdays(schedule: NonNullable<BridgeRule["schedule"]>, now: Date): boolean {
+  const days = schedule.weekdays;
+  if (!Array.isArray(days) || days.length === 0) return true;
+  return days.includes(now.getDay());
+}
+
+/**
+ * 随机抖动偏移量（毫秒）。
+ *
+ * 用「规则 id + 当天日期」做种子而不是 Math.random：同一天内多次判定
+ * 必须得到同一个偏移，否则每轮轮询都会算出不同的触发时刻，规则会在
+ * 时间窗边缘反复进出、行为不可预测。换一天就换一个偏移，够了。
+ */
+function jitterOffsetMs(ruleId: string, now: Date, jitterMinutes: number): number {
+  const minutes = Math.max(0, Math.min(120, Number(jitterMinutes) || 0));
+  if (minutes === 0) return 0;
+  let hash = 0;
+  const seed = `${ruleId}#${now.getFullYear()}-${now.getMonth()}-${now.getDate()}`;
+  for (let i = 0; i < seed.length; i++) {
+    hash = ((hash << 5) - hash + seed.charCodeAt(i)) | 0;
+  }
+  // 映射到 [-minutes, +minutes]
+  const ratio = (Math.abs(hash) % 2001) / 1000 - 1; // [-1, 1]
+  return Math.round(ratio * minutes * 60_000);
+}
+
+/**
+ * 这条定时规则今天已经跑了几次（按本地日期归零）。
+ * 供每日上限判断使用；只看今天，不做长期统计。
+ */
+function runsTodayCount(rule: BridgeRule, now: Date): number {
+  const record = getBridgeRuleDailyRuns(rule.id);
+  return record.dateKey === bridgeDateKey(now) ? record.count : 0;
+}
+
+/**
  * 这条定时规则现在该不该跑。
  *
  * daily / weekly 的判定用「今天（本周）的那个时刻」当基准：
@@ -643,17 +711,29 @@ function isScheduleDue(
   rule: BridgeRule,
   now: Date,
   lastRunAt: number,
+  globalQuietHours?: BridgeRule["quietHours"],
 ): boolean {
   const schedule = rule.schedule;
   if (!schedule) return false;
 
   // 安静时段内一律不触发，也不补发。
   // 不补发是刻意的：攒到早上一次性蹦出七条「该喝水了」比不发更烦人。
-  if (isInQuietHours(rule.quietHours, now)) return false;
+  if (isInQuietHours(effectiveQuietHours(rule, globalQuietHours), now)) return false;
+
+  // 每日上限：先于一切时间判定，超了就今天彻底不再跑。
+  const dailyLimit = Math.max(0, Math.floor(Number(rule.dailyLimit) || 0));
+  if (dailyLimit > 0 && runsTodayCount(rule, now) >= dailyLimit) return false;
+
+  // 星期限定：只对 daily 生效（weekly 自带星期概念，interval 是「每隔」不该被限）
+  if (schedule.kind === "daily" && !matchesWeekdays(schedule, now)) return false;
 
   if (schedule.kind === "interval") {
     const minutes = Math.max(1, Math.min(10080, Number(schedule.minutes) || 0));
-    return now.getTime() - lastRunAt >= minutes * 60_000;
+    const due = now.getTime() - lastRunAt >= minutes * 60_000;
+    if (!due) return false;
+    // 抖动只影响「提前/推后多少」，不改变「该不该跑」的判断：
+    // 已经到间隔了就算该跑，抖动体现在下面的执行时刻上。
+    return true;
   }
 
   const matched = /^(\d{1,2}):(\d{2})$/.exec(schedule.time || "");
@@ -669,6 +749,12 @@ function isScheduleDue(
     // 回退到本周对应的那一天（今天就是那天时 diff=0）
     target.setDate(target.getDate() - ((now.getDay() - weekday + 7) % 7));
   }
+  // 随机抖动：把目标时刻整体平移一个固定偏移，让触发不像机器准点。
+  // 同一天内偏移恒定（见 jitterOffsetMs 的种子说明），所以「到没到点」的
+  // 判断是稳定的，不会每轮轮询都变。
+  const jitter = jitterOffsetMs(rule.id, now, Number(rule.jitterMinutes) || 0);
+  if (jitter !== 0) target.setTime(target.getTime() + jitter);
+
   if (now.getTime() < target.getTime()) return false;
 
   // 建好规则时今天这个点已经过了：不补触发，否则「下午建一条早八点的规则」
@@ -688,10 +774,13 @@ export async function runDueScheduledRules(): Promise<number> {
   const rules = loadBridgeRules().filter(rule => rule.enabled && rule.schedule);
   if (rules.length === 0) return 0;
 
+  // 全局安静时段只读一次：这一轮里所有规则共用同一个默认值。
+  const globalQuietHours = loadBridgeSettings().quietHours;
+
   let fired = 0;
   for (const rule of rules) {
     const now = new Date();
-    if (!isScheduleDue(rule, now, getBridgeRuleLastRunAt(rule.id))) continue;
+    if (!isScheduleDue(rule, now, getBridgeRuleLastRunAt(rule.id), globalQuietHours)) continue;
 
     // 造一个「凭空来的」信号：定时规则的动作里 {payload} 没有真实数据可填，
     // 用规则名当 payload，至少 WriteChat 写出来的内容是可读的。
@@ -703,7 +792,9 @@ export async function runDueScheduledRules(): Promise<number> {
     };
 
     // 先记运行时间：动作可能触发 LLM 生成（几十秒），期间不能让它被重复判定。
+    // 每日计数同步累加，否则 dailyLimit 永远读到 0，上限形同虚设。
     markBridgeRuleRun(rule.id);
+    markBridgeRuleDailyRun(rule.id, now);
     try {
       const text = await processText(rule, item);
       const actions = await runActions(rule, item, text);
